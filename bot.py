@@ -172,7 +172,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Filter out results with a low score and show only the top 50
-    final_results = [r for r in sorted_results if fuzz.ratio(query.lower(), r['file_name'].lower()) > 50][:50]
+    final_results = [r for r in sorted_results if fuzz.partial_ratio(query.lower(), r['file_name'].lower()) > 60][:50]
     
     if not final_results:
         await update.message.reply_text("❌ No relevant files found.")
@@ -245,7 +245,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
             reverse=True
         )
-        final_results = [r for r in sorted_results if fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 50][:50]
+        final_results = [r for r in sorted_results if fuzz.partial_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 60][:50]
 
         await query.message.delete()
         await send_results_page(query.message.chat.id, final_results, page, context, search_query)
@@ -260,7 +260,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
             reverse=True
         )
-        final_results = [r for r in sorted_results if fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 50][:50]
+        final_results = [r for r in sorted_results if fuzz.partial_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 60][:50]
         
         for file in final_results[page * 10:(page + 1) * 10]:
             await context.bot.copy_message(
