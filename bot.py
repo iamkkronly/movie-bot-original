@@ -112,6 +112,17 @@ def connect_to_mongo():
         logger.error(f"Failed to connect to MongoDB at index {current_uri_index}: {e}")
         return False
 
+async def delete_file_message(context: ContextTypes.DEFAULT_TYPE):
+    """A job to delete a message after a delay."""
+    job_data = context.job.data
+    chat_id = job_data["chat_id"]
+    message_id = job_data["message_id"]
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.info(f"Deleted message {message_id} from chat {chat_id}.")
+    except TelegramError as e:
+        logger.error(f"Failed to delete message {message_id} from chat {chat_id}: {e}")
+
 
 # ========================
 # HANDLERS
@@ -267,12 +278,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
             # Send file to user's private chat
-            await context.bot.copy_message(
+            sent_message = await context.bot.copy_message(
                 chat_id=query.from_user.id,
                 from_chat_id=file_data["channel_id"],
                 message_id=file_data["file_id"],
             )
             
+            # Schedule the message deletion after 5 minutes
+            context.job_queue.run_once(
+                delete_file_message, 5 * 60, data={
+                    "chat_id": sent_message.chat_id,
+                    "message_id": sent_message.message_id
+                }
+            )
+
             # Send promotional links to user's private chat
             for promo_text in PROMOTIONAL_LINKS:
                 await context.bot.send_message(
@@ -281,7 +300,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             
             # Send confirmation message to the original chat
-            await query.message.reply_text("✅ I have sent the file and a few other links to you in a private message.")
+            await query.message.reply_text("✅ I have sent the file and a few other links to you in a private message. The file will be deleted automatically in 5 minutes.")
         else:
             await query.message.reply_text("❌ File not found.")
 
