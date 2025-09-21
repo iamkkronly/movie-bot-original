@@ -21,6 +21,7 @@ from fuzzywuzzy import fuzz
 # ========================
 BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
+LOG_CHANNEL = -1002988891392  # Channel to log user queries
 ADMINS = [6705618257]        # Admin IDs
 
 # A list of MongoDB URIs to use. Add as many as you need.
@@ -156,6 +157,14 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
     raw_query = update.message.text.strip()
     query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ")
+
+    # Log the user's query
+    user = update.effective_user
+    log_text = f"🔍 User: {user.full_name} | @{user.username} | ID: {user.id}\nQuery: {raw_query}"
+    try:
+        await context.bot.send_message(LOG_CHANNEL, text=log_text)
+    except Exception as e:
+        logger.error(f"Failed to log query to channel: {e}")
 
     # Find ALL files. This ensures the fuzzy search is comprehensive.
     results = list(files_col.find({}))
