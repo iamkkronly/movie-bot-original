@@ -2,24 +2,24 @@
 # Licensed under the MIT License.
 
 import logging
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pymongo import MongoClient
 from bson.objectid import ObjectId
-
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+from pymongo import MongoClient
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
 )
-logger = logging.getLogger(__name__)
 
-# ==========================
-# CONFIGURATION
-# ==========================
-BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"
-
-DB_CHANNEL = -1002975831610  # Database channel ID
-ADMINS = [6280045392, 6705618257]  # Admin IDs
+# ========================
+# CONFIG
+# ========================
+BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
+DB_CHANNEL = -1002975831610  # Database channel
+ADMINS = [6705618257]        # Admin IDs
 
 MONGO_URI = (
     "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/"
@@ -29,51 +29,55 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["telegram_files"]
 files_col = db["files"]
 
-# Initialize bot
-app = Client("file_index_bot", bot_token=BOT_TOKEN)
+# Logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 
-# ==========================
+# ========================
 # HANDLERS
-# ==========================
+# ========================
 
-# Save incoming files from admins
-@app.on_message(filters.user(ADMINS) & (filters.document | filters.video | filters.audio))
-async def save_file(client, message):
-    try:
-        file = message.document or message.video or message.audio
-        if not file:
-            return
-
-        forwarded = await message.forward(DB_CHANNEL)
-
-        file_data = {
-            "file_name": file.file_name,
-            "file_id": forwarded.id,
-            "channel_id": forwarded.chat.id,
-        }
-        files_col.insert_one(file_data)
-
-        await message.reply_text(f"✅ File saved: **{file.file_name}**")
-    except Exception as e:
-        logger.error(f"Error saving file: {e}")
-        await message.reply_text("❌ Failed to save file.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Send me a movie name to search.")
 
 
-# Search for files
-@app.on_message(filters.private & filters.text)
-async def search_files(client, message):
-    query = message.text.strip()
-    results = list(files_col.find({"file_name": {"$regex": query, "$options": "i"}}).limit(50))
-
-    if not results:
-        await message.reply_text("❌ No files found.")
+async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends file -> save to channel + DB"""
+    user_id = update.message.from_user.id
+    if user_id not in ADMINS:
         return
 
-    await send_results_page(message.chat.id, results, page=0)
+    file = update.message.document or update.message.video or update.message.audio
+    if not file:
+        return
+
+    # Forward to database channel
+    forwarded = await update.message.forward(DB_CHANNEL)
+
+    # Save metadata
+    files_col.insert_one({
+        "file_name": file.file_name or file.file_unique_id,
+        "file_id": forwarded.message_id,
+        "channel_id": forwarded.chat.id,
+    })
+
+    await update.message.reply_text(f"✅ Saved: {file.file_name}")
 
 
-async def send_results_page(chat_id, results, page):
+async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search DB and show results"""
+    query = update.message.text.strip()
+    results = list(files_col.find({"file_name": {"$regex": query, "$options": "i"}}).limit(50))
+    if not results:
+        await update.message.reply_text("❌ No files found.")
+        return
+    await send_results_page(update.effective_chat.id, results, 0, context)
+
+
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE):
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
 
@@ -96,50 +100,63 @@ async def send_results_page(chat_id, results, page):
 
     buttons.append([InlineKeyboardButton("📨 Send All Files", callback_data=f"sendall_{page}")])
 
-    await app.send_message(chat_id, text or "No results found.",
-                           reply_markup=InlineKeyboardMarkup(buttons))
+    await context.bot.send_message(
+        chat_id, text or "No results.", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
+    )
 
 
-# Handle button clicks
-@app.on_callback_query()
-async def callback_handler(client, cq: CallbackQuery):
-    data = cq.data
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button clicks"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
     if data.startswith("get_"):
-        file_id = data.split("_", 1)[1]
-        file_data = files_col.find_one({"_id": ObjectId(file_id)})
+        file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
-            try:
-                await app.copy_message(cq.message.chat.id, file_data["channel_id"], file_data["file_id"])
-            except Exception as e:
-                logger.error(f"Error sending file: {e}")
-                await cq.answer("❌ Failed to fetch file.")
+            await context.bot.copy_message(
+                chat_id=query.message.chat.id,
+                from_chat_id=file_data["channel_id"],
+                message_id=file_data["file_id"],
+            )
         else:
-            await cq.answer("❌ File not found.")
+            await query.message.reply_text("❌ File not found.")
 
     elif data.startswith("page_"):
         page = int(data.split("_", 1)[1])
-        query = cq.message.text.split("\n")[0].strip()
-        results = list(files_col.find({"file_name": {"$regex": query, "$options": "i"}}).limit(50))
-        await cq.message.delete()
-        await send_results_page(cq.message.chat.id, results, page)
+        last_text = query.message.text.split("\n")[0]
+        results = list(files_col.find({"file_name": {"$regex": last_text, "$options": "i"}}).limit(50))
+        await query.message.delete()
+        await send_results_page(query.message.chat.id, results, page, context)
 
     elif data.startswith("sendall_"):
         page = int(data.split("_", 1)[1])
-        query = cq.message.text.split("\n")[0].strip()
-        results = list(files_col.find({"file_name": {"$regex": query, "$options": "i"}}).limit(50))
-        start, end = page * 10, (page + 1) * 10
-        for file in results[start:end]:
-            try:
-                await app.copy_message(cq.message.chat.id, file["channel_id"], file["file_id"])
-            except Exception as e:
-                logger.error(f"Error sending all files: {e}")
-        await cq.answer("📨 Sent all files!")
+        last_text = query.message.text.split("\n")[0]
+        results = list(files_col.find({"file_name": {"$regex": last_text, "$options": "i"}}).limit(50))
+        for file in results[page * 10:(page + 1) * 10]:
+            await context.bot.copy_message(
+                chat_id=query.message.chat.id,
+                from_chat_id=file["channel_id"],
+                message_id=file["file_id"],
+            )
+        await query.message.reply_text("📨 Sent all files!")
 
 
-# ==========================
-# RUN BOT
-# ==========================
-if __name__ == "__main__":
+# ========================
+# MAIN
+# ========================
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.Video.ALL | filters.Audio.ALL, save_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
     logger.info("Bot started...")
-    app.run()
+    app.run_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
