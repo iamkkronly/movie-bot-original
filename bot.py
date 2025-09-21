@@ -59,12 +59,12 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Save metadata
     files_col.insert_one({
-        "file_name": file.file_name or file.file_unique_id,
+        "file_name": getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id,
         "file_id": forwarded.message_id,
         "channel_id": forwarded.chat.id,
     })
 
-    await update.message.reply_text(f"✅ Saved: {file.file_name}")
+    await update.message.reply_text(f"✅ Saved: {getattr(file, 'file_name', None) or getattr(file, 'title', None)}")
 
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,7 +150,8 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.Video.ALL | filters.Audio.ALL, save_file))
+    # FIXED filters: use filters.VIDEO and filters.AUDIO (uppercase)
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
     app.add_handler(CallbackQueryHandler(button_handler))
 
