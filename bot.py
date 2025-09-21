@@ -4,6 +4,7 @@
 import logging
 from bson.objectid import ObjectId
 from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
@@ -22,13 +23,17 @@ BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 ADMINS = [6705618257]        # Admin IDs
 
-MONGO_URI = (
-    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/"
-    "?retryWrites=true&w=majority&appName=Cluster0"
-)
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client["telegram_files"]
-files_col = db["files"]
+# A list of MongoDB URIs to use. Add as many as you need.
+# The bot will try them in order if a connection or insert fails.
+MONGO_URIS = [
+    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://<REPLACE_WITH_YOUR_USER>:<REPLACE_WITH_YOUR_PASSWORD>@<REPLACE_WITH_YOUR_CLUSTER>.mongodb.net/?retryWrites=true&w=majority&appName=<REPLACE_WITH_YOUR_APPNAME>",
+]
+current_uri_index = 0
+
+mongo_client = None
+db = None
+files_col = None
 
 # Logging
 logging.basicConfig(
@@ -45,6 +50,20 @@ def escape_markdown(text: str) -> str:
     """Helper function to escape special characters in Markdown V2."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return "".join('\\' + char if char in escape_chars else char for char in text)
+
+def connect_to_mongo():
+    """Connect to the MongoDB URI at the current index."""
+    global mongo_client, db, files_col
+    try:
+        uri = MONGO_URIS[current_uri_index]
+        mongo_client = MongoClient(uri)
+        db = mongo_client["telegram_files"]
+        files_col = db["files"]
+        logger.info(f"Successfully connected to MongoDB at index {current_uri_index}.")
+        return True
+    except (PyMongoError, IndexError) as e:
+        logger.error(f"Failed to connect to MongoDB at index {current_uri_index}: {e}")
+        return False
 
 
 # ========================
@@ -76,15 +95,35 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
     clean_name = raw_name.replace("_", " ").replace(".", " ") if raw_name else "Unknown"
+    
+    global current_uri_index, files_col
+    
+    saved = False
+    while not saved and current_uri_index < len(MONGO_URIS):
+        try:
+            # Try to save metadata with the current client
+            files_col.insert_one({
+                "file_name": clean_name,
+                "file_id": forwarded.message_id,
+                "channel_id": forwarded.chat.id,
+            })
+            await update.message.reply_text(f"✅ Saved: {clean_name}")
+            saved = True
+        except Exception as e:
+            logger.error(f"Error saving file with URI #{current_uri_index + 1}: {e}")
+            current_uri_index += 1
+            if current_uri_index < len(MONGO_URIS):
+                await update.message.reply_text(
+                    f"⚠️ Database connection failed. Attempting to switch to URI #{current_uri_index + 1}..."
+                )
+                if not connect_to_mongo():
+                    # If connection to the new URI also fails, the loop will continue to the next one
+                    await update.message.reply_text("❌ Failed to connect to the next database.")
+            else:
+                await update.message.reply_text("❌ Failed to save file on all available databases.")
 
-    # Save metadata
-    files_col.insert_one({
-        "file_name": clean_name,
-        "file_id": forwarded.message_id,
-        "channel_id": forwarded.chat.id,
-    })
-
-    await update.message.reply_text(f"✅ Saved: {clean_name}")
+    if not saved:
+        logger.error("All MongoDB URIs have been tried and failed.")
 
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -195,6 +234,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========================
 
 def main():
+    if not connect_to_mongo():
+        logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
+        return
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
