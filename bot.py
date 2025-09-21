@@ -255,7 +255,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks"""
     if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/c/1831610")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
         await update.callback_query.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
         return
 
