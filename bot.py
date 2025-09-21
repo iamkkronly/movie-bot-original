@@ -190,11 +190,11 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     text = f"🔎 Results for: *{escaped_query}*\n\n"
     buttons = []
     for idx, file in enumerate(page_results, start=start + 1):
-        # Escape the filename for Markdown and format it for display
-        escaped_file_name = escape_markdown(file['file_name'])
-        two_line_name = format_filename_for_display(escaped_file_name)
+        # Format the filename first, then escape it for Markdown
+        two_line_name = format_filename_for_display(file['file_name'])
+        escaped_file_name = escape_markdown(two_line_name)
         
-        text += f"**{idx}.** {two_line_name}\n"
+        text += f"**{idx}.** {escaped_file_name}\n"
         buttons.append(
             [InlineKeyboardButton(file["file_name"][:40], callback_data=f"get_{file['_id']}")]
         )
