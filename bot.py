@@ -13,6 +13,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from fuzzywuzzy import fuzz
 
 # ========================
 # CONFIG
@@ -22,7 +23,7 @@ DB_CHANNEL = -1002975831610  # Database channel
 ADMINS = [6705618257]        # Admin IDs
 
 MONGO_URI = (
-    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/"
+    "mongodb-cluster0.lgao3zu.mongodb.net/"
     "?retryWrites=true&w=majority&appName=Cluster0"
 )
 mongo_client = MongoClient(MONGO_URI)
@@ -57,9 +58,14 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Forward to database channel
     forwarded = await update.message.forward(DB_CHANNEL)
 
-    # Clean filename (replace "_" with space)
-    raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
-    clean_name = raw_name.replace("_", " ") if raw_name else "Unknown"
+    # Get filename from caption, then from file_name, replacing underscores and dots with spaces
+    # Otherwise, use a default value
+    if update.message.caption:
+        raw_name = update.message.caption
+    else:
+        raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
+
+    clean_name = raw_name.replace("_", " ").replace(".", " ") if raw_name else "Unknown"
 
     # Save metadata
     files_col.insert_one({
@@ -72,13 +78,25 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Search DB and show results"""
-    query = update.message.text.strip().replace("_", " ")
+    """Search DB and show results, sorted by relevance"""
+    raw_query = update.message.text.strip()
+    query = raw_query.replace("_", " ").replace(".", " ")
+
+    # Find all potential matches
     results = list(files_col.find({"file_name": {"$regex": query, "$options": "i"}}).limit(50))
+
     if not results:
         await update.message.reply_text("❌ No files found.")
         return
-    await send_results_page(update.effective_chat.id, results, 0, context, query)
+
+    # Calculate a similarity score for each result and sort
+    sorted_results = sorted(
+        results,
+        key=lambda x: fuzz.ratio(query.lower(), x['file_name'].lower()),
+        reverse=True
+    )
+
+    await send_results_page(update.effective_chat.id, sorted_results, 0, context, raw_query)
 
 
 async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str):
@@ -129,15 +147,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("page_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        results = list(files_col.find({"file_name": {"$regex": search_query, "$options": "i"}}).limit(50))
+        # Note: The search_query in the callback data is the raw user query,
+        # so we need to re-run the search and sorting logic to get the correct order.
+        results = list(files_col.find({"file_name": {"$regex": search_query.replace("_", " ").replace(".", " "), "$options": "i"}}).limit(50))
+        sorted_results = sorted(
+            results,
+            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " "), x['file_name'].lower()),
+            reverse=True
+        )
         await query.message.delete()
-        await send_results_page(query.message.chat.id, results, page, context, search_query)
+        await send_results_page(query.message.chat.id, sorted_results, page, context, search_query)
 
     elif data.startswith("sendall_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        results = list(files_col.find({"file_name": {"$regex": search_query, "$options": "i"}}).limit(50))
-        for file in results[page * 10:(page + 1) * 10]:
+        results = list(files_col.find({"file_name": {"$regex": search_query.replace("_", " ").replace(".", " "), "$options": "i"}}).limit(50))
+        sorted_results = sorted(
+            results,
+            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " "), x['file_name'].lower()),
+            reverse=True
+        )
+        for file in sorted_results[page * 10:(page + 1) * 10]:
             await context.bot.copy_message(
                 chat_id=query.message.chat.id,
                 from_chat_id=file["channel_id"],
