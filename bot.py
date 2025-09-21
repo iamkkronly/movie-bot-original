@@ -22,7 +22,6 @@ BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 ADMINS = [6705618257]        # Admin IDs
 
-# FIX: Add 'mongodb+srv://' back to the start of the URI
 MONGO_URI = (
     "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/"
     "?retryWrites=true&w=majority&appName=Cluster0"
@@ -36,6 +35,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+# ========================
+# HELPERS
+# ========================
+
+def escape_markdown(text: str) -> str:
+    """Helper function to escape special characters in Markdown V2."""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return "".join('\\' + char if char in escape_chars else char for char in text)
 
 
 # ========================
@@ -104,10 +113,14 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
 
-    text = f"🔎 Results for: *{query}*\n\n"
+    # Escape the query string for Markdown
+    escaped_query = escape_markdown(query)
+    text = f"🔎 Results for: *{escaped_query}*\n\n"
     buttons = []
     for idx, file in enumerate(page_results, start=start + 1):
-        text += f"**{idx}.** {file['file_name']}\n"
+        # Escape the filename for Markdown
+        escaped_file_name = escape_markdown(file['file_name'])
+        text += f"**{idx}.** {escaped_file_name}\n"
         buttons.append(
             [InlineKeyboardButton(file["file_name"][:40], callback_data=f"get_{file['_id']}")]
         )
