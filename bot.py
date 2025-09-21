@@ -236,11 +236,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("get_"):
         file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
+            # Send file to user's private chat
             await context.bot.copy_message(
-                chat_id=query.message.chat.id,
+                chat_id=query.from_user.id,
                 from_chat_id=file_data["channel_id"],
                 message_id=file_data["file_id"],
             )
+            # Send confirmation message to the original chat
+            await query.message.reply_text("✅ I have sent the file to you in a private message.")
         else:
             await query.message.reply_text("❌ File not found.")
 
