@@ -1,2 +1,4 @@
 python-telegram-bot==20.8
 pymongo==4.7.3
+fuzzywuzzy==0.18.0
+python-levenshtein==0.25.1
