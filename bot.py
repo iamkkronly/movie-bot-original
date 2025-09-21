@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
 
 # ========================
@@ -22,7 +23,14 @@ from fuzzywuzzy import fuzz
 BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
+JOIN_CHECK_CHANNEL = -1002692055617  # Channel users must join to use the bot
 ADMINS = [6705618257]        # Admin IDs
+
+PROMOTIONAL_LINKS = [
+    "Join our main channel: @filestore4u",
+    "Our backup channel: @freemovie5u",
+    "For latest movies: @latestmovies"
+]
 
 # A list of MongoDB URIs to use. Add as many as you need.
 # The bot will try them in order if a connection or insert fails.
@@ -77,6 +85,18 @@ def format_filename_for_display(filename: str) -> str:
     else:
         # Fallback if no space is found (e.g., a single long word)
         return filename[:mid] + '\n' + filename[mid:]
+
+async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
+    """Check if the user is a member of the required channel."""
+    try:
+        member = await context.bot.get_chat_member(chat_id=JOIN_CHECK_CHANNEL, user_id=user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            return True
+        else:
+            return False
+    except TelegramError as e:
+        logger.error(f"Error checking member status for user {user_id}: {e}")
+        return False
 
 def connect_to_mongo():
     """Connect to the MongoDB URI at the current index."""
@@ -155,6 +175,11 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/c/1831610")]])
+        await update.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
+        return
+
     raw_query = update.message.text.strip()
     query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ")
 
@@ -229,6 +254,11 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks"""
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/c/1831610")]])
+        await update.callback_query.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
+        return
+
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -242,8 +272,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from_chat_id=file_data["channel_id"],
                 message_id=file_data["file_id"],
             )
+            
+            # Send promotional links to user's private chat
+            for promo_text in PROMOTIONAL_LINKS:
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=promo_text
+                )
+            
             # Send confirmation message to the original chat
-            await query.message.reply_text("✅ I have sent the file to you in a private message.")
+            await query.message.reply_text("✅ I have sent the file and a few other links to you in a private message.")
         else:
             await query.message.reply_text("❌ File not found.")
 
