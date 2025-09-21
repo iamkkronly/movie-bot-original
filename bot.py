@@ -176,7 +176,7 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
     if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/c/1831610")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
         await update.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
         return
 
