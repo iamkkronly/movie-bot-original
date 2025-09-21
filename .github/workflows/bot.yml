@@ -1,0 +1,36 @@
+# © 2025 Kaustav Ray. All rights reserved.
+# Licensed under the MIT License.
+#
+# GitHub Actions Workflow for Bot
+# Restarts every hour (cron)
+
+name: Telegram Bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot with auto-restart loop
+        run: |
+          echo "Starting bot..."
+          while true; do
+            timeout 3600 python bot.py || true
+            echo "Bot restarting in 5s..."
+            sleep 5
+          done
