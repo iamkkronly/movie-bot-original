@@ -277,20 +277,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("get_"):
         file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
-            # Send file to user's private chat
-            sent_message = await context.bot.copy_message(
-                chat_id=query.from_user.id,
-                from_chat_id=file_data["channel_id"],
-                message_id=file_data["file_id"],
-            )
+            sent_message = None
+            try:
+                # Send file to user's private chat
+                sent_message = await context.bot.copy_message(
+                    chat_id=query.from_user.id,
+                    from_chat_id=file_data["channel_id"],
+                    message_id=file_data["file_id"],
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to send file to user {query.from_user.id}: {e}")
+                await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
+                return
             
-            # Schedule the message deletion after 5 minutes
-            context.job_queue.run_once(
-                delete_file_message, 5 * 60, data={
-                    "chat_id": sent_message.chat_id,
-                    "message_id": sent_message.message_id
-                }
-            )
+            # If the message was sent successfully, schedule the deletion
+            if sent_message:
+                try:
+                    context.job_queue.run_once(
+                        delete_file_message, 5 * 60, data={
+                            "chat_id": sent_message.chat_id,
+                            "message_id": sent_message.message_id
+                        }
+                    )
+                    logger.info(f"Scheduled deletion for message {sent_message.message_id} in chat {sent_message.chat_id}.")
+                except Exception as e:
+                    logger.error(f"Failed to schedule job for message deletion: {e}")
 
             # Send promotional links to user's private chat
             for promo_text in PROMOTIONAL_LINKS:
