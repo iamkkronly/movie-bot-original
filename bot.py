@@ -51,6 +51,32 @@ def escape_markdown(text: str) -> str:
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return "".join('\\' + char if char in escape_chars else char for char in text)
 
+def format_filename_for_display(filename: str) -> str:
+    """Splits a long filename into two lines for better display."""
+    if len(filename) < 40:
+        return filename
+    
+    mid = len(filename) // 2
+    split_point = -1
+    
+    # Try to find a space near the midpoint
+    for i in range(mid, 0, -1):
+        if filename[i] == ' ':
+            split_point = i
+            break
+    
+    if split_point == -1:
+        for i in range(mid, len(filename)):
+            if filename[i] == ' ':
+                split_point = i
+                break
+    
+    if split_point != -1:
+        return filename[:split_point] + '\n' + filename[split_point+1:]
+    else:
+        # Fallback if no space is found (e.g., a single long word)
+        return filename[:mid] + '\n' + filename[mid:]
+
 def connect_to_mongo():
     """Connect to the MongoDB URI at the current index."""
     global mongo_client, db, files_col
@@ -87,14 +113,14 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Forward to database channel
     forwarded = await update.message.forward(DB_CHANNEL)
 
-    # Get filename from caption, then from file_name, replacing underscores and dots with spaces
+    # Get filename from caption, then from file_name, replacing underscores, dots, and hyphens with spaces
     # Otherwise, use a default value
     if update.message.caption:
         raw_name = update.message.caption
     else:
         raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
-    clean_name = raw_name.replace("_", " ").replace(".", " ") if raw_name else "Unknown"
+    clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
     
     global current_uri_index, files_col
     
@@ -129,10 +155,10 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
     raw_query = update.message.text.strip()
-    query = raw_query.replace("_", " ").replace(".", " ")
+    query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ")
 
-    # Find all potential matches
-    results = list(files_col.find({"file_name": {"$regex": query, "$options": "i"}}).limit(50))
+    # Find ALL files. This ensures the fuzzy search is comprehensive.
+    results = list(files_col.find({}))
 
     if not results:
         await update.message.reply_text("❌ No files found.")
@@ -145,7 +171,14 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reverse=True
     )
 
-    await send_results_page(update.effective_chat.id, sorted_results, 0, context, raw_query)
+    # Filter out results with a low score and show only the top 50
+    final_results = [r for r in sorted_results if fuzz.ratio(query.lower(), r['file_name'].lower()) > 50][:50]
+    
+    if not final_results:
+        await update.message.reply_text("❌ No relevant files found.")
+        return
+
+    await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query)
 
 
 async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str):
@@ -157,12 +190,17 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     text = f"🔎 Results for: *{escaped_query}*\n\n"
     buttons = []
     for idx, file in enumerate(page_results, start=start + 1):
-        # Escape the filename for Markdown
+        # Escape the filename for Markdown and format it for display
         escaped_file_name = escape_markdown(file['file_name'])
-        text += f"**{idx}.** {escaped_file_name}\n"
+        two_line_name = format_filename_for_display(escaped_file_name)
+        
+        text += f"**{idx}.** {two_line_name}\n"
         buttons.append(
             [InlineKeyboardButton(file["file_name"][:40], callback_data=f"get_{file['_id']}")]
         )
+    
+    # Add the promotional text at the end
+    text += "\n\nKaustav Ray                                                                                                      Join here: @filestore4u     @freemovie5u"
 
     nav_buttons = []
     if page > 0:
@@ -200,27 +238,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("page_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        # Note: The search_query in the callback data is the raw user query,
-        # so we need to re-run the search and sorting logic to get the correct order.
-        results = list(files_col.find({"file_name": {"$regex": search_query.replace("_", " ").replace(".", " "), "$options": "i"}}).limit(50))
+        # Re-run the broader search and sorting logic to get the correct results
+        all_results = list(files_col.find({}))
         sorted_results = sorted(
-            results,
-            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " "), x['file_name'].lower()),
+            all_results,
+            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
             reverse=True
         )
+        final_results = [r for r in sorted_results if fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 50][:50]
+
         await query.message.delete()
-        await send_results_page(query.message.chat.id, sorted_results, page, context, search_query)
+        await send_results_page(query.message.chat.id, final_results, page, context, search_query)
 
     elif data.startswith("sendall_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        results = list(files_col.find({"file_name": {"$regex": search_query.replace("_", " ").replace(".", " "), "$options": "i"}}).limit(50))
+        # Re-run the broader search and sorting logic
+        all_results = list(files_col.find({}))
         sorted_results = sorted(
-            results,
-            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " "), x['file_name'].lower()),
+            all_results,
+            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
             reverse=True
         )
-        for file in sorted_results[page * 10:(page + 1) * 10]:
+        final_results = [r for r in sorted_results if fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 50][:50]
+        
+        for file in final_results[page * 10:(page + 1) * 10]:
             await context.bot.copy_message(
                 chat_id=query.message.chat.id,
                 from_chat_id=file["channel_id"],
