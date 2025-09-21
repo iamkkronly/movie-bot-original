@@ -22,8 +22,9 @@ BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 ADMINS = [6705618257]        # Admin IDs
 
+# FIX: Add 'mongodb+srv://' back to the start of the URI
 MONGO_URI = (
-    "mongodb-cluster0.lgao3zu.mongodb.net/"
+    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/"
     "?retryWrites=true&w=majority&appName=Cluster0"
 )
 mongo_client = MongoClient(MONGO_URI)
