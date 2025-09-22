@@ -325,7 +325,7 @@ async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to ban a user by their user ID."""
     user_id = update.effective_user.id
     if user_id not in ADMINS:
-        await update.message.reply_text("❌ You do not have permission to use this command.")
+        await update.message.reply_text("❌ Cannot ban an admin.")
         return
     
     if not context.args or not context.args[0].isdigit():
@@ -465,9 +465,10 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Calculate a similarity score for each result and sort
+    # CHANGED: Using fuzz.token_set_ratio for better relevance ranking
     sorted_results = sorted(
         results,
-        key=lambda x: fuzz.ratio(query.lower(), x['file_name'].lower()),
+        key=lambda x: fuzz.token_set_ratio(query.lower(), x['file_name'].lower()),
         reverse=True
     )
 
@@ -584,9 +585,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(page_str)
         # Re-run the broader search and sorting logic to get the correct results
         all_results = list(files_col.find({}))
+        # CHANGED: Using fuzz.token_set_ratio for better relevance ranking
         sorted_results = sorted(
             all_results,
-            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
+            key=lambda x: fuzz.token_set_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
             reverse=True
         )
         final_results = [r for r in sorted_results if fuzz.partial_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 60][:50]
@@ -599,9 +601,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(page_str)
         # Re-run the broader search and sorting logic
         all_results = list(files_col.find({}))
+        # CHANGED: Using fuzz.token_set_ratio for better relevance ranking
         sorted_results = sorted(
             all_results,
-            key=lambda x: fuzz.ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
+            key=lambda x: fuzz.token_set_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
             reverse=True
         )
         final_results = [r for r in sorted_results if fuzz.partial_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 60][:50]
