@@ -414,7 +414,7 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "file_name": clean_name,
                 "file_id": forwarded.message_id,
                 "channel_id": forwarded.chat.id,
-                "file_size": file.file_size, # NEW: save file size
+                "file_size": file.file_size, 
             })
             await update.message.reply_text(f"✅ Saved: {clean_name}")
             saved = True
@@ -494,9 +494,9 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         two_line_name = format_filename_for_display(file['file_name'])
         escaped_file_name = escape_markdown(two_line_name)
         
-        file_size = format_size(file.get("file_size")) # NEW: Get and format file size
+        file_size = format_size(file.get("file_size"))
         
-        button_text = f"[{file_size}] {file['file_name'][:40]}" # NEW: Add size to button text
+        button_text = f"[{file_size}] {file['file_name'][:40]}"
         buttons.append(
             [InlineKeyboardButton(button_text, callback_data=f"get_{file['_id']}")]
         )
@@ -562,7 +562,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # If the message was sent successfully, wait and then delete it
             if sent_message:
                 try:
-                    await query.message.reply_text("✅ I have sent the file and a few other links to you in a private message. The file will be deleted automatically in 5 minutes.")
+                    await query.message.reply_text("✅ I have sent the file to you in private message. The file will be deleted automatically in 5 minutes.")
                     
                     # Wait for 5 minutes
                     await asyncio.sleep(5 * 60)
