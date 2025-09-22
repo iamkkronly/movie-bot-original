@@ -117,7 +117,7 @@ def connect_to_mongo():
 
 async def save_user_info(user: Update.effective_user):
     """Saves user information to the database if not already present."""
-    if users_col:
+    if users_col is not None:  # FIX: Correct way to check if collection is initialized
         try:
             users_col.update_one(
                 {"_id": user.id},
