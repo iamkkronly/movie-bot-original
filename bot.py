@@ -45,6 +45,8 @@ mongo_client = None
 db = None
 files_col = None
 users_col = None
+banned_users_col = None
+
 
 # Logging
 logging.basicConfig(
@@ -100,15 +102,22 @@ async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error checking member status for user {user_id}: {e}")
         return False
 
+async def is_banned(user_id):
+    """Check if the user is banned."""
+    if banned_users_col is not None:
+        return banned_users_col.find_one({"_id": user_id}) is not None
+    return False
+
 def connect_to_mongo():
     """Connect to the MongoDB URI at the current index."""
-    global mongo_client, db, files_col, users_col
+    global mongo_client, db, files_col, users_col, banned_users_col
     try:
         uri = MONGO_URIS[current_uri_index]
         mongo_client = MongoClient(uri)
         db = mongo_client["telegram_files"]
         files_col = db["files"]
         users_col = db["users"]
+        banned_users_col = db["banned_users"]
         logger.info(f"Successfully connected to MongoDB at index {current_uri_index}.")
         return True
     except (PyMongoError, IndexError) as e:
@@ -139,8 +148,204 @@ async def save_user_info(user: Update.effective_user):
 # ========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await is_banned(update.effective_user.id):
+        await update.message.reply_text("❌ You are banned from using this bot.")
+        return
     await save_user_info(update.effective_user)
     await update.message.reply_text("👋 Send me a movie name to search.")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows the help message and available commands."""
+    if await is_banned(update.effective_user.id):
+        await update.message.reply_text("❌ You are banned from using this bot.")
+        return
+    help_message = (
+        "Hello! I am a file search bot. Here's how to use me:\n\n"
+        "**User Commands:**\n"
+        "🎬 Send me a movie name to search for files.\n"
+        "  - Example: `The Matrix`\n"
+        "ℹ️ `/info`: Get information about this bot.\n"
+        "❓ `/help`: Show this help message.\n\n"
+        "**Admin Commands:**\n"
+        "⬆️ Send me a file with a caption to upload it.\n"
+        "  - The file will be saved to the database and is searchable.\n"
+        "📢 `/broadcast <message>`: Send a message to all users.\n"
+        "👥 `/total_users`: Get the total number of users.\n"
+        "🗃️ `/total_files`: Get the total number of files.\n"
+        "📊 `/stats`: Get bot statistics (total users and files).\n"
+        "🗑️ `/deletefile <db_id>`: Delete a file from the database.\n"
+        "🔨 `/ban <user_id>`: Ban a user from the bot.\n"
+        "✅ `/unban <user_id>`: Unban a user.\n"
+    )
+    await update.message.reply_text(help_message, parse_mode="Markdown")
+
+
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows information about the bot."""
+    if await is_banned(update.effective_user.id):
+        await update.message.reply_text("❌ You are banned from using this bot.")
+        return
+    info_message = (
+        "**About this Bot**\n\n"
+        "This bot helps you find and share files on Telegram.\n"
+        "• It uses a MongoDB database to store file information.\n"
+        "• Files are retrieved from a private Telegram channel.\n"
+        "• Developed by Kaustav Ray."
+    )
+    await update.message.reply_text(info_message, parse_mode="Markdown")
+
+
+async def total_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to get the total number of users."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if users_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    try:
+        user_count = users_col.count_documents({})
+        await update.message.reply_text(f"📊 **Total Users:** {user_count}")
+    except Exception as e:
+        logger.error(f"Error getting user count: {e}")
+        await update.message.reply_text("❌ Failed to retrieve user count. Please check the database connection.")
+
+
+async def total_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to get the total number of files."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if files_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    try:
+        file_count = files_col.count_documents({})
+        await update.message.reply_text(f"🗃️ **Total Files:** {file_count}")
+    except Exception as e:
+        logger.error(f"Error getting file count: {e}")
+        await update.message.reply_text("❌ Failed to retrieve file count. Please check the database connection.")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to get bot statistics."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+
+    if users_col is None or files_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    try:
+        user_count = users_col.count_documents({})
+        file_count = files_col.count_documents({})
+        stats_message = (
+            f"📊 **Bot Statistics**\n"
+            f"  • Total Users: {user_count}\n"
+            f"  • Total Files: {file_count}"
+        )
+        await update.message.reply_text(stats_message, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error getting bot stats: {e}")
+        await update.message.reply_text("❌ Failed to retrieve stats. Please check the database connection.")
+
+
+async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to delete a file by its MongoDB ID."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if files_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /deletefile <MongoDB_ID>")
+        return
+    
+    try:
+        file_id = context.args[0]
+        result = files_col.delete_one({"_id": ObjectId(file_id)})
+        
+        if result.deleted_count == 1:
+            await update.message.reply_text(f"✅ File with ID `{file_id}` has been deleted from the database.")
+        else:
+            await update.message.reply_text(f"❌ File with ID `{file_id}` not found in the database.")
+    except Exception as e:
+        logger.error(f"Error deleting file: {e}")
+        await update.message.reply_text("❌ Invalid ID or an error occurred. Please provide a valid MongoDB ID.")
+
+
+async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to ban a user by their user ID."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /ban <user_id>")
+        return
+    
+    user_to_ban_id = int(context.args[0])
+    if user_to_ban_id in ADMINS:
+        await update.message.reply_text("❌ Cannot ban an admin.")
+        return
+
+    if banned_users_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    try:
+        banned_users_col.update_one(
+            {"_id": user_to_ban_id},
+            {"$set": {"_id": user_to_ban_id}},
+            upsert=True
+        )
+        await update.message.reply_text(f"🔨 User `{user_to_ban_id}` has been banned.")
+    except Exception as e:
+        logger.error(f"Error banning user: {e}")
+        await update.message.reply_text("❌ An error occurred while trying to ban the user.")
+
+
+async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to unban a user by their user ID."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /unban <user_id>")
+        return
+    
+    user_to_unban_id = int(context.args[0])
+
+    if banned_users_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    try:
+        result = banned_users_col.delete_one({"_id": user_to_unban_id})
+        
+        if result.deleted_count == 1:
+            await update.message.reply_text(f"✅ User `{user_to_unban_id}` has been unbanned.")
+        else:
+            await update.message.reply_text(f"❌ User `{user_to_unban_id}` was not found in the banned list.")
+    except Exception as e:
+        logger.error(f"Error unbanning user: {e}")
+        await update.message.reply_text("❌ An error occurred while trying to unban the user.")
 
 
 async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,6 +402,9 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
+    if await is_banned(update.effective_user.id):
+        await update.message.reply_text("❌ You are banned from using this bot.")
+        return
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
@@ -277,6 +485,10 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks"""
+    if await is_banned(update.effective_user.id):
+        await update.callback_query.message.reply_text("❌ You are banned from using this bot.")
+        return
+
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
@@ -415,6 +627,14 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("info", info_command))
+    app.add_handler(CommandHandler("total_users", total_users_command))
+    app.add_handler(CommandHandler("total_files", total_files_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("deletefile", delete_file_command))
+    app.add_handler(CommandHandler("ban", ban_user_command))
+    app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
