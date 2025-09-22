@@ -280,6 +280,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
                 return
             
+            # Send promotional links to user's private chat immediately
+            for promo_text in PROMOTIONAL_LINKS:
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=promo_text
+                )
+
             # If the message was sent successfully, wait and then delete it
             if sent_message:
                 try:
@@ -296,13 +303,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.info(f"Deleted message {sent_message.message_id} from chat {sent_message.chat_id}.")
                 except Exception as e:
                     logger.error(f"Failed to delete message: {e}")
-
-            # Send promotional links to user's private chat
-            for promo_text in PROMOTIONAL_LINKS:
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=promo_text
-                )
             
         else:
             await query.message.reply_text("❌ File not found.")
