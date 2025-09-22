@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
+import math
 
 # ========================
 # CONFIG
@@ -63,6 +64,21 @@ def escape_markdown(text: str) -> str:
     """Helper function to escape special characters in Markdown V2."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return "".join('\\' + char if char in escape_chars else char for char in text)
+
+def format_size(size_in_bytes: int) -> str:
+    """Converts a size in bytes to a human-readable format."""
+    if size_in_bytes is None:
+        return "N/A"
+    
+    if size_in_bytes == 0:
+        return "0 B"
+    
+    size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+    i = int(math.floor(math.log(size_in_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_in_bytes / p, 2)
+    return f"{s} {size_name[i]}"
+
 
 def format_filename_for_display(filename: str) -> str:
     """Splits a long filename into two lines for better display."""
@@ -175,6 +191,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗃️ `/total_files`: Get the total number of files.\n"
         "📊 `/stats`: Get bot statistics (total users and files).\n"
         "🗑️ `/deletefile <db_id>`: Delete a file from the database.\n"
+        "🗑️ `/deleteall`: Delete all files from the database.\n"
         "🔨 `/ban <user_id>`: Ban a user from the bot.\n"
         "✅ `/unban <user_id>`: Unban a user.\n"
     )
@@ -285,6 +302,25 @@ async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Invalid ID or an error occurred. Please provide a valid MongoDB ID.")
 
 
+async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to delete all files from the database."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if files_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    try:
+        result = files_col.delete_many({})
+        await update.message.reply_text(f"✅ Deleted {result.deleted_count} files from the database.")
+    except Exception as e:
+        logger.error(f"Error deleting all files: {e}")
+        await update.message.reply_text("❌ An error occurred while trying to delete all files.")
+
+
 async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to ban a user by their user ID."""
     user_id = update.effective_user.id
@@ -378,6 +414,7 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "file_name": clean_name,
                 "file_id": forwarded.message_id,
                 "channel_id": forwarded.chat.id,
+                "file_size": file.file_size, # NEW: save file size
             })
             await update.message.reply_text(f"✅ Saved: {clean_name}")
             saved = True
@@ -450,16 +487,18 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
     # Escape the query string for Markdown
     escaped_query = escape_markdown(query)
-    text = f"🔎 Results for: *{escaped_query}*\n\n"
+    text = f"🔎 Results for: *{escaped_query}*"
     buttons = []
     for idx, file in enumerate(page_results, start=start + 1):
         # Format the filename first, then escape it for Markdown
         two_line_name = format_filename_for_display(file['file_name'])
         escaped_file_name = escape_markdown(two_line_name)
         
-        text += f"**{idx}.** {escaped_file_name}\n"
+        file_size = format_size(file.get("file_size")) # NEW: Get and format file size
+        
+        button_text = f"[{file_size}] {file['file_name'][:40]}" # NEW: Add size to button text
         buttons.append(
-            [InlineKeyboardButton(file["file_name"][:40], callback_data=f"get_{file['_id']}")]
+            [InlineKeyboardButton(button_text, callback_data=f"get_{file['_id']}")]
         )
     
     # Add the promotional text at the end
@@ -631,6 +670,7 @@ def main():
     app.add_handler(CommandHandler("total_files", total_files_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("deletefile", delete_file_command))
+    app.add_handler(CommandHandler("deleteall", delete_all_command))
     app.add_handler(CommandHandler("ban", ban_user_command))
     app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
