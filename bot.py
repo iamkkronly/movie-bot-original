@@ -186,6 +186,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Admin Commands:**\n"
         "⬆️ Send me a file with a caption to upload it.\n"
         "  - The file will be saved to the database and is searchable.\n"
+        "⬆️ You can also send a file directly in the database channel to index it.\n"
         "📢 `/broadcast <message>`: Send a message to all users.\n"
         "👥 `/total_users`: Get the total number of users.\n"
         "🗃️ `/total_files`: Get the total number of files.\n"
@@ -325,7 +326,7 @@ async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to ban a user by their user ID."""
     user_id = update.effective_user.id
     if user_id not in ADMINS:
-        await update.message.reply_text("❌ Cannot ban an admin.")
+        await update.message.reply_text("❌ You do not have permission to use this command.")
         return
     
     if not context.args or not context.args[0].isdigit():
@@ -382,8 +383,8 @@ async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ An error occurred while trying to unban the user.")
 
 
-async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends file -> save to channel + DB"""
+async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends file to bot -> save to channel + DB"""
     user_id = update.message.from_user.id
     if user_id not in ADMINS:
         return
@@ -435,6 +436,69 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error("All MongoDB URIs have been tried and failed.")
 
 
+async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends file directly to channel -> save to DB"""
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat.id
+
+    # Only process files from admins in the database channel
+    if chat_id != DB_CHANNEL or user_id not in ADMINS:
+        return
+
+    file = update.message.document or update.message.video or update.message.audio
+    if not file:
+        return
+
+    # Get filename from caption, then from file_name, replacing underscores, dots, and hyphens with spaces
+    # Otherwise, use a default value
+    if update.message.caption:
+        raw_name = update.message.caption
+    else:
+        raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
+    
+    clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+
+    global current_uri_index, files_col
+    
+    saved = False
+    while not saved and current_uri_index < len(MONGO_URIS):
+        try:
+            # Try to save metadata with the current client
+            files_col.insert_one({
+                "file_name": clean_name,
+                "file_id": update.message.message_id,
+                "channel_id": chat_id,
+                "file_size": file.file_size, 
+            })
+            # Send notification to the admin
+            try:
+                await context.bot.send_message(user_id, f"✅ File **`{clean_name}`** has been indexed successfully from the database channel.")
+            except TelegramError as e:
+                logger.error(f"Failed to send notification to admin {user_id}: {e}")
+            saved = True
+        except Exception as e:
+            logger.error(f"Error saving file from channel with URI #{current_uri_index + 1}: {e}")
+            current_uri_index += 1
+            if current_uri_index < len(MONGO_URIS):
+                try:
+                    await context.bot.send_message(user_id, f"⚠️ Database connection failed. Attempting to switch to URI #{current_uri_index + 1}...")
+                except TelegramError:
+                    pass
+                if not connect_to_mongo():
+                    try:
+                        await context.bot.send_message(user_id, "❌ Failed to connect to the next database.")
+                    except TelegramError:
+                        pass
+            else:
+                try:
+                    await context.bot.send_message(user_id, "❌ Failed to save file on all available databases.")
+                except TelegramError:
+                    pass
+
+    if not saved:
+        logger.error("All MongoDB URIs have been tried and failed.")
+
+
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
     if await is_banned(update.effective_user.id):
@@ -465,7 +529,6 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Calculate a similarity score for each result and sort
-    # CHANGED: Using fuzz.token_set_ratio for better relevance ranking
     sorted_results = sorted(
         results,
         key=lambda x: fuzz.token_set_ratio(query.lower(), x['file_name'].lower()),
@@ -677,7 +740,16 @@ def main():
     app.add_handler(CommandHandler("ban", ban_user_command))
     app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file))
+
+    # Handles files sent to the bot by admins (PM or group)
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file_from_pm))
+    
+    # NEW: Handles files sent directly to the database channel by admins
+    app.add_handler(MessageHandler(
+        (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=DB_CHANNEL),
+        save_file_from_channel
+    ))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
     app.add_handler(CallbackQueryHandler(button_handler))
 
