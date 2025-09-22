@@ -18,6 +18,7 @@ from telegram.ext import (
 from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
 import math
+import re
 
 # ========================
 # CONFIG
@@ -194,6 +195,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗃️ `/total_files`: Get the total number of files.\n"
         "📊 `/stats`: Get bot statistics (total users and files).\n"
         "🗑️ `/deletefile <db_id>`: Delete a file from the database.\n"
+        "  - Use `/findfile <filename>` to get the ID first.\n"
+        "📁 `/findfile <filename>`: Find a file by name and get its ID.\n"
         "🗑️ `/deleteall`: Delete all files from the database.\n"
         "🔨 `/ban <user_id>`: Ban a user from the bot.\n"
         "✅ `/unban <user_id>`: Unban a user.\n"
@@ -289,7 +292,7 @@ async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /deletefile <MongoDB_ID>")
+        await update.message.reply_text("Usage: /deletefile <MongoDB_ID>\nTip: Use /findfile <filename> to get the ID.")
         return
     
     try:
@@ -303,6 +306,44 @@ async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Error deleting file: {e}")
         await update.message.reply_text("❌ Invalid ID or an error occurred. Please provide a valid MongoDB ID.")
+
+
+async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to find a file by its name and show its ID."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    if files_col is None:
+        await update.message.reply_text("❌ Database not connected.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /findfile <filename>")
+        return
+
+    query_filename = " ".join(context.args)
+
+    try:
+        # Use regex for case-insensitive search
+        results = list(files_col.find({"file_name": {"$regex": query_filename, "$options": "i"}}))
+        
+        if not results:
+            await update.message.reply_text(f"❌ No files found with the name `{query_filename}`.")
+            return
+
+        response_text = f"📁 Found {len(results)} files matching `{query_filename}`:\n\n"
+        for idx, file in enumerate(results):
+            response_text += f"{idx + 1}. *{escape_markdown(file['file_name'])}*\n  `ID: {file['_id']}`\n\n"
+        
+        response_text += "Copy the ID of the file you want to delete and use the command:\n`/deletefile <ID>`"
+        
+        await update.message.reply_text(response_text, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error finding file: {e}")
+        await update.message.reply_text("❌ An error occurred while trying to find the file.")
 
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -738,6 +779,7 @@ def main():
     app.add_handler(CommandHandler("total_files", total_files_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("deletefile", delete_file_command))
+    app.add_handler(CommandHandler("findfile", find_file_command))  # New Command Handler
     app.add_handler(CommandHandler("deleteall", delete_all_command))
     app.add_handler(CommandHandler("ban", ban_user_command))
     app.add_handler(CommandHandler("unban", unban_user_command))
