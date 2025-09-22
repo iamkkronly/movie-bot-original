@@ -117,7 +117,7 @@ def connect_to_mongo():
 
 async def save_user_info(user: Update.effective_user):
     """Saves user information to the database if not already present."""
-    if users_col is not None:  # FIX: Correct way to check if collection is initialized
+    if users_col is not None:
         try:
             users_col.update_one(
                 {"_id": user.id},
@@ -392,7 +392,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=uid, text=broadcast_text)
             sent_count += 1
-            await asyncio.sleep(0.1) # Small delay to avoid rate limiting
+            await asyncio.sleep(0.1)
         except TelegramError as e:
             failed_count += 1
             logger.error(f"Failed to send broadcast to user {uid}: {e}")
