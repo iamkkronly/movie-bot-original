@@ -44,6 +44,7 @@ current_uri_index = 0
 mongo_client = None
 db = None
 files_col = None
+users_col = None
 
 # Logging
 logging.basicConfig(
@@ -101,17 +102,36 @@ async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
 
 def connect_to_mongo():
     """Connect to the MongoDB URI at the current index."""
-    global mongo_client, db, files_col
+    global mongo_client, db, files_col, users_col
     try:
         uri = MONGO_URIS[current_uri_index]
         mongo_client = MongoClient(uri)
         db = mongo_client["telegram_files"]
         files_col = db["files"]
+        users_col = db["users"]
         logger.info(f"Successfully connected to MongoDB at index {current_uri_index}.")
         return True
     except (PyMongoError, IndexError) as e:
         logger.error(f"Failed to connect to MongoDB at index {current_uri_index}: {e}")
         return False
+
+async def save_user_info(user: Update.effective_user):
+    """Saves user information to the database if not already present."""
+    if users_col:
+        try:
+            users_col.update_one(
+                {"_id": user.id},
+                {
+                    "$set": {
+                        "first_name": user.first_name,
+                        "last_name": user.last_name,
+                        "username": user.username,
+                    }
+                },
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error saving user info for {user.id}: {e}")
 
 
 # ========================
@@ -119,6 +139,7 @@ def connect_to_mongo():
 # ========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await save_user_info(update.effective_user)
     await update.message.reply_text("👋 Send me a movie name to search.")
 
 
@@ -176,6 +197,7 @@ async def save_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
+    await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
         await update.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
@@ -255,6 +277,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks"""
+    await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
         await update.callback_query.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
@@ -297,10 +320,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     # Delete the message
                     await context.bot.delete_message(
-                        chat_id=sent_message.chat_id,
+                        chat_id=query.from_user.id,
                         message_id=sent_message.message_id
                     )
-                    logger.info(f"Deleted message {sent_message.message_id} from chat {sent_message.chat_id}.")
+                    logger.info(f"Deleted message {sent_message.message_id} from chat {query.from_user.id}.")
                 except Exception as e:
                     logger.error(f"Failed to delete message: {e}")
             
@@ -343,6 +366,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("📨 Sent all files!")
 
 
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Broadcasts a message to all users in the database.
+    Usage: /broadcast <message>
+    """
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+
+    broadcast_text = " ".join(context.args)
+    users_cursor = users_col.find({}, {"_id": 1})
+    user_ids = [user["_id"] for user in users_cursor]
+    sent_count = 0
+    failed_count = 0
+
+    await update.message.reply_text(f"🚀 Starting broadcast to {len(user_ids)} users...")
+
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=broadcast_text)
+            sent_count += 1
+            await asyncio.sleep(0.1) # Small delay to avoid rate limiting
+        except TelegramError as e:
+            failed_count += 1
+            logger.error(f"Failed to send broadcast to user {uid}: {e}")
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Unknown error sending broadcast to user {uid}: {e}")
+    
+    await update.message.reply_text(f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
+
+
 # ========================
 # MAIN
 # ========================
@@ -355,6 +415,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast_message))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
     app.add_handler(CallbackQueryHandler(button_handler))
