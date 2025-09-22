@@ -189,8 +189,6 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info_message = (
         "**About this Bot**\n\n"
         "This bot helps you find and share files on Telegram.\n"
-        "• It uses a MongoDB database to store file information.\n"
-        "• Files are retrieved from a private Telegram channel.\n"
         "• Developed by Kaustav Ray."
     )
     await update.message.reply_text(info_message, parse_mode="Markdown")
