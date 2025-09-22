@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import logging
+import asyncio
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -111,17 +112,6 @@ def connect_to_mongo():
     except (PyMongoError, IndexError) as e:
         logger.error(f"Failed to connect to MongoDB at index {current_uri_index}: {e}")
         return False
-
-async def delete_file_message(context: ContextTypes.DEFAULT_TYPE):
-    """A job to delete a message after a delay."""
-    job_data = context.job.data
-    chat_id = job_data["chat_id"]
-    message_id = job_data["message_id"]
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        logger.info(f"Deleted message {message_id} from chat {chat_id}.")
-    except TelegramError as e:
-        logger.error(f"Failed to delete message {message_id} from chat {chat_id}: {e}")
 
 
 # ========================
@@ -290,18 +280,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
                 return
             
-            # If the message was sent successfully, schedule the deletion
+            # If the message was sent successfully, wait and then delete it
             if sent_message:
                 try:
-                    context.job_queue.run_once(
-                        delete_file_message, 5 * 60, data={
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
+                    await query.message.reply_text("✅ I have sent the file and a few other links to you in a private message. The file will be deleted automatically in 5 minutes.")
+                    
+                    # Wait for 5 minutes
+                    await asyncio.sleep(5 * 60)
+                    
+                    # Delete the message
+                    await context.bot.delete_message(
+                        chat_id=sent_message.chat_id,
+                        message_id=sent_message.message_id
                     )
-                    logger.info(f"Scheduled deletion for message {sent_message.message_id} in chat {sent_message.chat_id}.")
+                    logger.info(f"Deleted message {sent_message.message_id} from chat {sent_message.chat_id}.")
                 except Exception as e:
-                    logger.error(f"Failed to schedule job for message deletion: {e}")
+                    logger.error(f"Failed to delete message: {e}")
 
             # Send promotional links to user's private chat
             for promo_text in PROMOTIONAL_LINKS:
@@ -310,8 +304,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text=promo_text
                 )
             
-            # Send confirmation message to the original chat
-            await query.message.reply_text("✅ I have sent the file and a few other links to you in a private message. The file will be deleted automatically in 5 minutes.")
         else:
             await query.message.reply_text("❌ File not found.")
 
