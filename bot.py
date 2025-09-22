@@ -582,7 +582,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_results = [r for r in sorted_results if fuzz.partial_ratio(query.lower(), r['file_name'].lower()) > 60][:50]
     
     if not final_results:
-        await update.message.reply_text("❌ No relevant files found.")
+        await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
         return
 
     await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query)
