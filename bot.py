@@ -19,6 +19,7 @@ from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
 import math
 import re
+import io
 
 # ========================
 # CONFIG
@@ -53,9 +54,10 @@ users_col = None
 banned_users_col = None
 
 
-# Logging
+# Logging setup with an in-memory buffer for the /log command
+log_stream = io.StringIO()
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO, stream=log_stream
 )
 logger = logging.getLogger(__name__)
 
@@ -201,6 +203,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗑️ `/deleteall`: Delete all files from the database.\n"
         "🔨 `/ban <user_id>`: Ban a user from the bot.\n"
         "✅ `/unban <user_id>`: Unban a user.\n"
+        "📝 `/log`: Show recent error logs.\n"
     )
     await update.message.reply_text(help_message, parse_mode="Markdown")
 
@@ -216,6 +219,32 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Developed by Kaustav Ray."
     )
     await update.message.reply_text(info_message, parse_mode="Markdown")
+
+
+async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to show recent error logs."""
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+    
+    # Retrieve all logs from the in-memory stream
+    log_stream.seek(0)
+    logs = log_stream.readlines()
+    
+    # Filter for ERROR and CRITICAL logs and get the last 20
+    error_logs = [log.strip() for log in logs if "ERROR" in log or "CRITICAL" in log]
+    recent_errors = error_logs[-20:]
+
+    if not recent_errors:
+        await update.message.reply_text("✅ No recent errors found in the logs.")
+    else:
+        log_text = "```\nRecent Error Logs:\n\n" + "\n".join(recent_errors) + "\n```"
+        await update.message.reply_text(log_text, parse_mode="MarkdownV2")
+    
+    # Clear the log buffer to prevent it from growing too large
+    log_stream.seek(0)
+    log_stream.truncate(0)
 
 
 async def total_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -812,6 +841,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("info", info_command))
+    app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
     app.add_handler(CommandHandler("total_files", total_files_command))
     app.add_handler(CommandHandler("stats", stats_command))
