@@ -677,6 +677,44 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     )
 
 
+async def send_file_task(query, context, file_data):
+    """New background task to send files."""
+    try:
+        sent_message = await context.bot.copy_message(
+            chat_id=query.from_user.id,
+            from_chat_id=file_data["channel_id"],
+            message_id=file_data["file_id"],
+        )
+        
+        # Send promotional links to user's private chat immediately
+        for promo_text in PROMOTIONAL_LINKS:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=promo_text
+            )
+        
+        # If the message was sent successfully, wait and then delete it
+        if sent_message:
+            await query.message.reply_text("✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
+            
+            # Wait for 5 minutes
+            await asyncio.sleep(5 * 60)
+            
+            # Delete the message
+            await context.bot.delete_message(
+                chat_id=query.from_user.id,
+                message_id=sent_message.message_id
+            )
+            logger.info(f"Deleted message {sent_message.message_id} from chat {query.from_user.id}.")
+        
+    except TelegramError as e:
+        logger.error(f"Failed to send file to user {query.from_user.id}: {e}")
+        await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while sending the file: {e}")
+        await query.message.reply_text("❌ An unexpected error occurred. Please try again later.")
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks"""
     # Provide an immediate answer to the callback query to clear the loading state on the button
@@ -696,47 +734,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("get_"):
-        # NEW: Send a message to the user to confirm the request is being processed
+        # Send a message to the user to confirm the request is being processed
         await query.message.reply_text("⌛ Processing your request, please wait...")
         
         file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
-            sent_message = None
-            try:
-                # Send file to user's private chat
-                sent_message = await context.bot.copy_message(
-                    chat_id=query.from_user.id,
-                    from_chat_id=file_data["channel_id"],
-                    message_id=file_data["file_id"],
-                )
-                
-                # Send promotional links to user's private chat immediately
-                for promo_text in PROMOTIONAL_LINKS:
-                    await context.bot.send_message(
-                        chat_id=query.from_user.id,
-                        text=promo_text
-                    )
-                
-                # If the message was sent successfully, wait and then delete it
-                if sent_message:
-                    # NEW: Acknowledge that the file has been sent
-                    await query.message.reply_text("✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
-                    
-                    # Wait for 5 minutes
-                    await asyncio.sleep(5 * 60)
-                    
-                    # Delete the message
-                    await context.bot.delete_message(
-                        chat_id=query.from_user.id,
-                        message_id=sent_message.message_id
-                    )
-                    logger.info(f"Deleted message {sent_message.message_id} from chat {query.from_user.id}.")
-                
-            except TelegramError as e:
-                logger.error(f"Failed to send file to user {query.from_user.id}: {e}")
-                await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
-                return
-            
+            # THIS IS THE NEW CHANGE
+            # Instead of running the slow `send_file_task` directly, we schedule it to run in the background.
+            # This allows the `button_handler` to finish immediately, freeing up the bot to receive the next button click.
+            asyncio.create_task(send_file_task(query, context, file_data))
         else:
             await query.message.reply_text("❌ File not found.")
 
