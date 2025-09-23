@@ -27,23 +27,25 @@ import io
 BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
-JOIN_CHECK_CHANNEL = -1002692055617  # Channel users must join to use the bot
+# NEW: Reverted to the correct channel IDs
+JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 
+# NEW: Updated to match the new channels you provided
 PROMOTIONAL_LINKS = [
     "Credit to Prince Kaustav Ray",
     "Join our main channel: @filestore4u",
-    "Our backup channel: @freemovie5u",
-    "For latest movies: @latestmovies"
+    "Join our channel: @code_boost",
+    "Join our channel: @krbook_official"
 ]
 
 # A list of MongoDB URIs to use. Add as many as you need.
 # The bot will try them in order if a connection or insert fails.
 MONGO_URIS = [
     "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://mw4whhg_db_user:8QTb4HZBrHE99Hh8@cluster0.xdpewb7.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://7afcwd6_db_user:sOthaH9f53BDRBoj@cluster0.m9d2zcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb-cluster-2-uri",
+    "mongodb-cluster-3-uri",
+    "mongodb-cluster-4-uri",
 ]
 current_uri_index = 0
 
@@ -113,16 +115,17 @@ def format_filename_for_display(filename: str) -> str:
         return filename[:mid] + '\n' + filename[mid:]
 
 async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
-    """Check if the user is a member of the required channel."""
-    try:
-        member = await context.bot.get_chat_member(chat_id=JOIN_CHECK_CHANNEL, user_id=user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            return True
-        else:
+    """Check if the user is a member of ALL required channels."""
+    for channel_id in JOIN_CHECK_CHANNEL:
+        try:
+            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                return False
+        except TelegramError as e:
+            logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
             return False
-    except TelegramError as e:
-        logger.error(f"Error checking member status for user {user_id}: {e}")
-        return False
+            
+    return True
 
 async def is_banned(user_id):
     """Check if the user is banned."""
@@ -575,17 +578,23 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
     
-    # Send instant feedback
-    await update.message.reply_text("Searching...")
-
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("❌ You are banned from using this bot.")
         return
+    
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
-        await update.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
+        # NEW: Updated to show buttons for all channels
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
+            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
+        ])
+        await update.message.reply_text("❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
+
+    # Send instant feedback
+    await update.message.reply_text("Searching...")
 
     raw_query = update.message.text.strip()
     # Normalize query for better fuzzy search
@@ -599,7 +608,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to log query to channel: {e}")
 
-    # FIX 1: Use a more flexible regex that finds words in any order
+    # Use a more flexible regex that finds words in any order
     words = normalized_query.split()
     regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
     
@@ -633,8 +642,6 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
         return
 
-    # FIX 2: Only call the function that sends the inline buttons.
-    # The redundant text message sending was removed.
     await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query)
 
 
@@ -727,8 +734,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
-        await query.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
+        # NEW: Updated to show buttons for all channels
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
+            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
+        ])
+        await query.message.reply_text("❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
     data = query.data
