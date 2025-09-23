@@ -43,9 +43,9 @@ PROMOTIONAL_LINKS = [
 # The bot will try them in order if a connection or insert fails.
 MONGO_URIS = [
     "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb-cluster-2-uri",
-    "mongodb-cluster-3-uri",
-    "mongodb-cluster-4-uri",
+    "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://mw4whhg_db_user:8QTb4HZBrHE99Hh8@cluster0.xdpewb7.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://7afcwd6_db_user:sOthaH9f53BDRBoj@cluster0.m9d2zcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 current_uri_index = 0
 
