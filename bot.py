@@ -30,6 +30,7 @@ JOIN_CHECK_CHANNEL = -1002692055617  # Channel users must join to use the bot
 ADMINS = [6705618257]        # Admin IDs
 
 PROMOTIONAL_LINKS = [
+    "Credit to Prince Kaustav Ray",
     "Join our main channel: @filestore4u",
     "Our backup channel: @freemovie5u",
     "For latest movies: @latestmovies"
