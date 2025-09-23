@@ -555,7 +555,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw_query = update.message.text.strip()
-    query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ")
+    # Normalize query for better fuzzy search
+    normalized_query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
 
     # Log the user's query
     user = update.effective_user
@@ -565,8 +566,10 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to log query to channel: {e}")
 
-    # Find ALL files. This ensures the fuzzy search is comprehensive.
-    results = list(files_col.find({}))
+    # Use a regex to get a preliminary set of files from the database
+    # This is the key performance improvement
+    regex_pattern = re.compile(normalized_query, re.IGNORECASE)
+    results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
 
     if not results:
         await update.message.reply_text("❌ No files found.")
@@ -575,12 +578,12 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Calculate a similarity score for each result and sort
     sorted_results = sorted(
         results,
-        key=lambda x: fuzz.token_set_ratio(query.lower(), x['file_name'].lower()),
+        key=lambda x: fuzz.token_set_ratio(normalized_query, x['file_name'].lower()),
         reverse=True
     )
 
     # Filter out results with a low score and show only the top 50
-    final_results = [r for r in sorted_results if fuzz.partial_ratio(query.lower(), r['file_name'].lower()) > 60][:50]
+    final_results = [r for r in sorted_results if fuzz.partial_ratio(normalized_query, r['file_name'].lower()) > 60][:50]
     
     if not final_results:
         await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
@@ -690,15 +693,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("page_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
+        # Normalize the search query
+        normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
+        
+        # Use a regex to get a preliminary set of files from the database
+        regex_pattern = re.compile(normalized_query, re.IGNORECASE)
+        all_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
+        
         # Re-run the broader search and sorting logic to get the correct results
-        all_results = list(files_col.find({}))
-        # CHANGED: Using fuzz.token_set_ratio for better relevance ranking
         sorted_results = sorted(
             all_results,
-            key=lambda x: fuzz.token_set_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
+            key=lambda x: fuzz.token_set_ratio(normalized_query, x['file_name'].lower()),
             reverse=True
         )
-        final_results = [r for r in sorted_results if fuzz.partial_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 60][:50]
+        final_results = [r for r in sorted_results if fuzz.partial_ratio(normalized_query, r['file_name'].lower()) > 60][:50]
 
         await query.message.delete()
         await send_results_page(query.message.chat.id, final_results, page, context, search_query)
@@ -706,15 +714,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("sendall_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
+        # Normalize the search query
+        normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
+        
+        # Use a regex to get a preliminary set of files from the database
+        regex_pattern = re.compile(normalized_query, re.IGNORECASE)
+        all_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
+
         # Re-run the broader search and sorting logic
-        all_results = list(files_col.find({}))
-        # CHANGED: Using fuzz.token_set_ratio for better relevance ranking
         sorted_results = sorted(
             all_results,
-            key=lambda x: fuzz.token_set_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), x['file_name'].lower()),
+            key=lambda x: fuzz.token_set_ratio(normalized_query, x['file_name'].lower()),
             reverse=True
         )
-        final_results = [r for r in sorted_results if fuzz.partial_ratio(search_query.lower().replace("_", " ").replace(".", " ").replace("-", " "), r['file_name'].lower()) > 60][:50]
+        final_results = [r for r in sorted_results if fuzz.partial_ratio(normalized_query, r['file_name'].lower()) > 60][:50]
         
         for file in final_results[page * 10:(page + 1) * 10]:
             await context.bot.copy_message(
