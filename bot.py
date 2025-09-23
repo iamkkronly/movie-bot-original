@@ -575,7 +575,7 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
     
-    # NEW: Send instant feedback
+    # Send instant feedback
     await update.message.reply_text("Searching...")
 
     if await is_banned(update.effective_user.id):
@@ -679,21 +679,26 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks"""
+    # Provide an immediate answer to the callback query to clear the loading state on the button
+    query = update.callback_query
+    await query.answer()
+
     if await is_banned(update.effective_user.id):
-        await update.callback_query.message.reply_text("❌ You are banned from using this bot.")
+        await query.message.reply_text("❌ You are banned from using this bot.")
         return
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url="https://t.me/filestore4u")]])
-        await update.callback_query.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
+        await query.message.reply_text("❌ You must join our channel to use this bot!", reply_markup=keyboard)
         return
 
-    query = update.callback_query
-    await query.answer()
     data = query.data
 
     if data.startswith("get_"):
+        # NEW: Send a message to the user to confirm the request is being processed
+        await query.message.reply_text("⌛ Processing your request, please wait...")
+        
         file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
             sent_message = None
@@ -704,22 +709,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     from_chat_id=file_data["channel_id"],
                     message_id=file_data["file_id"],
                 )
-            except TelegramError as e:
-                logger.error(f"Failed to send file to user {query.from_user.id}: {e}")
-                await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
-                return
-            
-            # Send promotional links to user's private chat immediately
-            for promo_text in PROMOTIONAL_LINKS:
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=promo_text
-                )
-
-            # If the message was sent successfully, wait and then delete it
-            if sent_message:
-                try:
-                    await query.message.reply_text("✅ I have sent the file to you in private message. The file will be deleted automatically in 5 minutes.")
+                
+                # Send promotional links to user's private chat immediately
+                for promo_text in PROMOTIONAL_LINKS:
+                    await context.bot.send_message(
+                        chat_id=query.from_user.id,
+                        text=promo_text
+                    )
+                
+                # If the message was sent successfully, wait and then delete it
+                if sent_message:
+                    # NEW: Acknowledge that the file has been sent
+                    await query.message.reply_text("✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
                     
                     # Wait for 5 minutes
                     await asyncio.sleep(5 * 60)
@@ -730,8 +731,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         message_id=sent_message.message_id
                     )
                     logger.info(f"Deleted message {sent_message.message_id} from chat {query.from_user.id}.")
-                except Exception as e:
-                    logger.error(f"Failed to delete message: {e}")
+                
+            except TelegramError as e:
+                logger.error(f"Failed to send file to user {query.from_user.id}: {e}")
+                await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
+                return
             
         else:
             await query.message.reply_text("❌ File not found.")
@@ -765,6 +769,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_results_page(query.message.chat.id, final_results, page, context, search_query)
 
     elif data.startswith("sendall_"):
+        # NEW: Send a message to the user to confirm the request is being processed
+        await query.message.reply_text("📨 Sending all files in the current list. This may take a moment...")
+
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
         # Re-run the search logic
@@ -791,7 +798,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
             )
-        await query.message.reply_text("📨 Sent all files!")
+        await query.message.reply_text("✅ All files sent!")
 
 
 async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
