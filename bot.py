@@ -574,6 +574,10 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search DB and show results, sorted by relevance"""
+    
+    # NEW: Send instant feedback
+    await update.message.reply_text("Searching...")
+
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("❌ You are banned from using this bot.")
         return
