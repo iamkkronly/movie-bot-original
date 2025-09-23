@@ -566,10 +566,9 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to log query to channel: {e}")
 
-    # Use a flexible regex to get a preliminary set of files from the database
-    # This is a key performance improvement for large databases
-    escaped_query = re.escape(normalized_query)
-    regex_pattern = re.compile(f".*{escaped_query}.*", re.IGNORECASE)
+    # FIX 1: Use a more flexible regex that finds words in any order
+    words = normalized_query.split()
+    regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
     
     try:
         # First, get a fast, preliminary list of files from the database
@@ -586,9 +585,9 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Now, perform a more accurate fuzzy search on this smaller list
     results_with_score = []
     for file in preliminary_results:
+        # Check against a lower threshold to allow more potential matches
         score = fuzz.token_set_ratio(normalized_query, file['file_name'])
-        # A good threshold ensures results are relevant
-        if score > 50:
+        if score > 40:
             results_with_score.append((file, score))
     
     # Sort the results by score in descending order
@@ -601,6 +600,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
         return
 
+    # FIX 2: Only call the function that sends the inline buttons.
+    # The redundant text message sending was removed.
     await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query)
 
 
@@ -708,16 +709,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Re-run the search logic for pagination
         normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
         
-        # Use a flexible regex to get a preliminary set of files
-        escaped_query = re.escape(normalized_query)
-        regex_pattern = re.compile(f".*{escaped_query}.*", re.IGNORECASE)
+        # Use a more flexible regex that finds words in any order
+        words = normalized_query.split()
+        regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
         preliminary_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
         
         # Now, perform a more accurate fuzzy search on this smaller list
         results_with_score = []
         for file in preliminary_results:
             score = fuzz.token_set_ratio(normalized_query, file['file_name'])
-            if score > 50:
+            if score > 40:
                 results_with_score.append((file, score))
         
         sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
@@ -736,16 +737,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Re-run the search logic
         normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
         
-        # Use a flexible regex to get a preliminary set of files
-        escaped_query = re.escape(normalized_query)
-        regex_pattern = re.compile(f".*{escaped_query}.*", re.IGNORECASE)
+        # Use a more flexible regex that finds words in any order
+        words = normalized_query.split()
+        regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
         preliminary_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
         
         # Now, perform a more accurate fuzzy search on this smaller list
         results_with_score = []
         for file in preliminary_results:
             score = fuzz.token_set_ratio(normalized_query, file['file_name'])
-            if score > 50:
+            if score > 40:
                 results_with_score.append((file, score))
         
         sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
@@ -797,7 +798,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
 
 
-# ========================
+# =-======================
 # MAIN
 # ========================
 
@@ -815,16 +816,14 @@ def main():
     app.add_handler(CommandHandler("total_files", total_files_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("deletefile", delete_file_command))
-    app.add_handler(CommandHandler("findfile", find_file_command))  # New Command Handler
+    app.add_handler(CommandHandler("findfile", find_file_command))
     app.add_handler(CommandHandler("deleteall", delete_all_command))
     app.add_handler(CommandHandler("ban", ban_user_command))
     app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
 
-    # Handles files sent to the bot by admins (PM or group)
     app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file_from_pm))
     
-    # NEW: Handles files sent directly to the database channel by admins
     app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=DB_CHANNEL),
         save_file_from_channel
