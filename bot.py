@@ -27,20 +27,19 @@ import io
 BOT_TOKEN = "8410215954:AAE0icLhQeXs4aIU0pA_wrhMbOOziPQLx24"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
-# NEW: Reverted to the correct channel IDs
+# Channels users must join for access
 JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 
-# NEW: Updated to match the new channels you provided
-PROMOTIONAL_LINKS = [
-    "Credit to Prince Kaustav Ray",
-    "Join our main channel: @filestore4u",
-    "Join our channel: @code_boost",
+# Custom promotional message (Simplified as per the last request)
+CUSTOM_PROMO_MESSAGE = (
+    "Credit to Prince Kaustav Ray\n\n"
+    "Join our main channel: @filestore4u\n"
+    "Join our channel: @code_boost\n"
     "Join our channel: @krbook_official"
-]
+)
 
 # A list of MongoDB URIs to use. Add as many as you need.
-# The bot will try them in order if a connection or insert fails.
 MONGO_URIS = [
     "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
@@ -191,15 +190,14 @@ async def send_file_task(query, context, file_data):
             message_id=file_data["file_id"],
         )
         
-        # Send promotional links
-        for promo_text in PROMOTIONAL_LINKS:
+        # If the message was sent successfully
+        if sent_message:
+            # Send the custom combined promotional message to the private chat (now simplified)
             await context.bot.send_message(
                 chat_id=user_id,
-                text=promo_text
+                text=CUSTOM_PROMO_MESSAGE
             )
-        
-        # If the message was sent successfully, wait and then delete it
-        if sent_message:
+            
             # Notify the user in the original chat (can be group/private)
             await query.message.reply_text("✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
             
@@ -237,16 +235,15 @@ async def send_all_files_task(query, context, file_list):
                 message_id=file["file_id"],
             )
             sent_messages.append(sent_message.message_id)
-            # Add a small delay between sending files to avoid rate limits
-            await asyncio.sleep(0.5)
-
-        # Send promotional links to user's private chat
-        for promo_text in PROMOTIONAL_LINKS:
+            
+            # Send the custom promotional message to the user's private chat after each file (now simplified)
             await context.bot.send_message(
                 chat_id=user_id,
-                text=promo_text
+                text=CUSTOM_PROMO_MESSAGE
             )
-            await asyncio.sleep(0.1) # small delay for promo links
+            
+            # Add a small delay between sending files to avoid rate limits
+            await asyncio.sleep(0.5)
 
         # Send final confirmation message to the chat where the button was clicked
         await query.message.reply_text(
@@ -832,7 +829,10 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Search ALL URIs and show results, sorted by relevance"""
+    """
+    Search ALL URIs and show results, sorted by relevance.
+    Uses a broad regex for initial filtering and fuzzy matching for accurate ranking.
+    """
     
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("❌ You are banned from using this bot.")
@@ -864,13 +864,24 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to log query to channel: {e}")
 
-    # Use a more flexible regex that finds words in any order
-    words = normalized_query.split()
-    regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
+    
+    # --- REVISED SEARCH LOGIC (Broad Filtering + Fuzzy Ranking) ---
+    
+    # Split the query into words and escape them for a forgiving regex. Ignore short words.
+    words = [re.escape(word) for word in normalized_query.split() if len(word) > 1]
+    
+    if not words:
+        await update.message.reply_text("❌ Query too short or invalid. Please try a longer search term.")
+        return
+    
+    # Create an OR condition for the words (e.g., /word1|word2|.../i)
+    # This ensures that if ANY of the main words are in the filename, it's considered for fuzzy ranking.
+    regex_pattern = re.compile("|".join(words), re.IGNORECASE)
+    query_filter = {"file_name": {"$regex": regex_pattern}}
     
     preliminary_results = []
     
-    # --- NEW LOGIC: Iterate over ALL URIs for search ---
+    # Iterate over ALL URIs for search
     for idx, uri in enumerate(MONGO_URIS):
         temp_client = None
         try:
@@ -880,23 +891,22 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             temp_db = temp_client["telegram_files"]
             temp_files_col = temp_db["files"]
             
-            # Query the database
-            results = list(temp_files_col.find({"file_name": {"$regex": regex_pattern}}))
+            # Query the database with the broad filter
+            results = list(temp_files_col.find(query_filter))
             preliminary_results.extend(results)
-            logger.info(f"Found {len(results)} matches in URI #{idx + 1}.")
             
         except Exception as e:
             logger.error(f"MongoDB search query failed on URI #{idx + 1}: {e}")
         finally:
             if temp_client:
                 temp_client.close()
-    # --- END NEW LOGIC ---
+    
+    # --- Fuzzy Ranking (to ensure the best match is first) ---
 
     if not preliminary_results:
         await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
         return
 
-    # Now, perform a more accurate fuzzy search on this aggregated list
     results_with_score = []
     # Use a set to track file_id + channel_id tuples to ensure no duplicates from different DBs
     unique_files = set() 
@@ -906,8 +916,11 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if file_key in unique_files:
             continue
             
+        # Use token_set_ratio: best for comparing strings where words might be reordered or contain extra words.
         score = fuzz.token_set_ratio(normalized_query, file['file_name'])
-        if score > 40:
+        
+        # Keep results that have a score above 40 (high relevance)
+        if score > 40: 
             results_with_score.append((file, score))
             unique_files.add(file_key)
     
@@ -918,27 +931,29 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_results = [result[0] for result in sorted_results[:50]]
     
     if not final_results:
-        await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
+        await update.message.reply_text("❌ No relevant files found after filtering by relevance. For your query contact @kaustavhibot")
         return
 
-    await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query)
+    # Pass the full result list to the pagination function for consistency
+    context.user_data['search_results'] = final_results
+    context.user_data['search_query'] = raw_query
+    
+    await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query, new_message=True)
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str):
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, message_id=None, new_message=False):
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
 
     # Escape the query string for Markdown
     escaped_query = escape_markdown(query)
-    text = f"🔎 Results for: *{escaped_query}*"
+    text = f"🔎 *Top {len(results)}* Results for: *{escaped_query}*\n(Page {page + 1} / {math.ceil(len(results) / 10)}) (Sorted by Relevance)"
     buttons = []
+    
+    # Add files for the current page
     for idx, file in enumerate(page_results, start=start + 1):
         # Format the filename first, then escape it for Markdown
-        two_line_name = format_filename_for_display(file['file_name'])
-        
         file_size = format_size(file.get("file_size"))
-        
-        # We need the full file object ID for retrieval
         file_obj_id = str(file['_id'])
         
         button_text = f"[{file_size}] {file['file_name'][:40]}"
@@ -949,15 +964,9 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     # Add the promotional text at the end
     text += "\n\nKaustav Ray                                                                                                      Join here: @filestore4u     @freemovie5u"
 
+    # Add navigation buttons
     nav_buttons = []
-    # We pass the full search results list along in context.user_data to prevent re-querying all URIs for pagination
-    # For simplicity here, we'll store the results temporarily. The full solution requires a dedicated caching mechanism.
-    # Storing the results in context.user_data will be lost on bot restart, but works for the current user session.
-    # The current code relies on the search query, which is acceptable for this code structure.
-    
     if page > 0:
-        # The query string in the callback needs to be properly URL-encoded if it contains special characters
-        # But for this bot's simple query, passing the raw query should be fine.
         nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{query}"))
     if end < len(results):
         nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{query}"))
@@ -965,11 +974,28 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     if nav_buttons:
         buttons.append(nav_buttons)
 
-    buttons.append([InlineKeyboardButton("📨 Send All Files", callback_data=f"sendall_{page}_{query}")])
-
-    await context.bot.send_message(
-        chat_id, text or "No results.", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
-    )
+    # Send All button
+    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{query}")])
+    
+    reply_markup = InlineKeyboardMarkup(buttons)
+    
+    try:
+        if new_message or message_id is None:
+            # Send as a new message (used for initial search result)
+            await context.bot.send_message(
+                chat_id, text, reply_markup=reply_markup, parse_mode="Markdown"
+            )
+        else:
+            # Edit the existing message (used for pagination)
+            await context.bot.edit_message_text(
+                chat_id=chat_id, 
+                message_id=message_id, 
+                text=text, 
+                reply_markup=reply_markup, 
+                parse_mode="Markdown"
+            )
+    except TelegramError as e:
+        logger.error(f"Error sending/editing search results page: {e}")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -984,11 +1010,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
-        # NEW: Updated to show buttons for all channels
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
             [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
-            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://tme/krbook_official")]
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
         ])
         await query.message.reply_text("❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
@@ -1011,6 +1036,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 temp_db = temp_client["telegram_files"]
                 temp_files_col = temp_db["files"]
                 
+                # We search by ObjectId which should be unique across all database copies
                 file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
                 if file_data:
                     logger.info(f"File {file_id_str} found for retrieval in URI: {uri}")
@@ -1028,76 +1054,146 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text("❌ File not found. The file may have been deleted or the database is inaccessible.")
 
-    elif data.startswith("page_") or data.startswith("sendall_"):
+    elif data.startswith("page_"):
+        # This handles both 'Prev' and 'Next' clicks
+        _, page_str, search_query = data.split("_", 2)
+        page = int(page_str)
         
-        if data.startswith("sendall_"):
-            await query.message.reply_text("📨 Sending all files in the current list. Please check your private chat with me. This may take a moment...")
+        # Retrieve search results from user_data
+        final_results = context.user_data.get('search_results')
+        
+        if not final_results:
+            # Re-run the search if results are lost (e.g., bot restarted or context cleared)
+            await query.message.reply_text("⚠️ Search results lost. Re-running search...")
+            
+            # This logic is copied from the search_files function for recovery purposes
+            normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
+            words = [re.escape(word) for word in normalized_query.split() if len(word) > 1]
+            if not words:
+                await query.message.reply_text("❌ Query too short or invalid.")
+                return
+
+            regex_pattern = re.compile("|".join(words), re.IGNORECASE)
+            query_filter = {"file_name": {"$regex": regex_pattern}}
+            preliminary_results = []
+            
+            for uri in MONGO_URIS:
+                temp_client = None
+                try:
+                    temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+                    temp_client.admin.command('ismaster')
+                    temp_db = temp_client["telegram_files"]
+                    temp_files_col = temp_db["files"]
+                    results = list(temp_files_col.find(query_filter))
+                    preliminary_results.extend(results)
+                except Exception as e:
+                    logger.error(f"MongoDB search query failed during recovery: {e}")
+                finally:
+                    if temp_client:
+                        temp_client.close()
+
+            results_with_score = []
+            unique_files = set() 
+            for file in preliminary_results:
+                file_key = (file.get('file_id'), file.get('channel_id'))
+                if file_key in unique_files: continue
+                score = fuzz.token_set_ratio(normalized_query, file['file_name'])
+                if score > 40:
+                    results_with_score.append((file, score))
+                    unique_files.add(file_key)
+            
+            sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
+            final_results = [result[0] for result in sorted_results[:50]]
+            
+            if not final_results:
+                await query.message.reply_text("❌ No relevant files found after recovery.")
+                return
+            
+            # Save recovered results
+            context.user_data['search_results'] = final_results
+            context.user_data['search_query'] = search_query
+        
+        # --- THE KEY CHANGE ---
+        # Edit the existing message instead of deleting and sending a new one
+        await send_results_page(
+            query.message.chat.id, 
+            final_results, 
+            page, 
+            context, 
+            search_query, 
+            message_id=query.message.message_id, # Pass the ID of the message to be edited
+            new_message=False # Explicitly state this is an edit
+        )
+
+    elif data.startswith("sendall_"):
+        
+        # Update the user message to reflect that only the current page is being sent
+        await query.message.reply_text("📨 Sending all files on the **current page**. Please check your private chat with me. This may take a moment...")
 
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
         
-        # Re-run the search logic for pagination/sendall
-        normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
-        
-        # Use a more flexible regex that finds words in any order
-        words = normalized_query.split()
-        regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
-        
-        preliminary_results = []
-        
-        # --- Rerun Search Logic: Iterate over ALL URIs for search ---
-        for idx, uri in enumerate(MONGO_URIS):
-            temp_client = None
-            try:
-                temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                temp_client.admin.command('ismaster')
-                temp_db = temp_client["telegram_files"]
-                temp_files_col = temp_db["files"]
-                
-                results = list(temp_files_col.find({"file_name": {"$regex": regex_pattern}}))
-                preliminary_results.extend(results)
-            except Exception as e:
-                logger.error(f"MongoDB search query failed on URI #{idx + 1}: {e}")
-            finally:
-                if temp_client:
-                    temp_client.close()
-        # --- End Rerun Search Logic ---
-        
-        # Now, perform a more accurate fuzzy search on this aggregated list
-        results_with_score = []
-        unique_files = set() 
-        for file in preliminary_results:
-            file_key = (file.get('file_id'), file.get('channel_id'))
-            if file_key in unique_files:
-                continue
-            
-            score = fuzz.token_set_ratio(normalized_query, file['file_name'])
-            if score > 40:
-                results_with_score.append((file, score))
-                unique_files.add(file_key)
-        
-        sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
-        final_results = [result[0] for result in sorted_results[:50]]
-        
+        # Retrieve search results from user_data
+        final_results = context.user_data.get('search_results')
+
         if not final_results:
-            await query.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
-            return
-        
-        if data.startswith("page_"):
-            # Edit the existing message to show the new page
-            await query.message.delete()
-            await send_results_page(query.message.chat.id, final_results, page, context, search_query)
-        
-        elif data.startswith("sendall_"):
-            # Get the files only for the current page
-            files_to_send = final_results[page * 10:(page + 1) * 10]
-            
-            if not files_to_send:
-                await query.message.reply_text("❌ No files found on this page to send.")
+            # Re-run search logic (same as in 'page_' section for robustness)
+            normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
+            words = [re.escape(word) for word in normalized_query.split() if len(word) > 1]
+            if not words:
+                await query.message.reply_text("❌ Query too short or invalid for recovery.")
                 return
 
-            # Schedule the batch sending task
-            asyncio.create_task(send_all_files_task(query, context, files_to_send))
+            regex_pattern = re.compile("|".join(words), re.IGNORECASE)
+            query_filter = {"file_name": {"$regex": regex_pattern}}
+            preliminary_results = []
+            
+            for uri in MONGO_URIS:
+                temp_client = None
+                try:
+                    temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+                    temp_client.admin.command('ismaster')
+                    temp_db = temp_client["telegram_files"]
+                    temp_files_col = temp_db["files"]
+                    results = list(temp_files_col.find(query_filter))
+                    preliminary_results.extend(results)
+                except Exception as e:
+                    logger.error(f"MongoDB search query failed during recovery for sendall: {e}")
+                finally:
+                    if temp_client:
+                        temp_client.close()
+
+            results_with_score = []
+            unique_files = set() 
+            for file in preliminary_results:
+                file_key = (file.get('file_id'), file.get('channel_id'))
+                if file_key in unique_files: continue
+                score = fuzz.token_set_ratio(normalized_query, file['file_name'])
+                if score > 40:
+                    results_with_score.append((file, score))
+                    unique_files.add(file_key)
+            
+            sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
+            final_results = [result[0] for result in sorted_results[:50]]
+            
+            if not final_results:
+                await query.message.reply_text("❌ No relevant files found after recovery for sendall.")
+                return
+            
+            # Save recovered results
+            context.user_data['search_results'] = final_results
+            context.user_data['search_query'] = search_query
+        
+        
+        # Get the files only for the current page
+        files_to_send = final_results[page * 10:(page + 1) * 10]
+        
+        if not files_to_send:
+            await query.message.reply_text("❌ No files found on this page to send.")
+            return
+
+        # Schedule the batch sending task
+        asyncio.create_task(send_all_files_task(query, context, files_to_send))
 
 
 # ========================
@@ -1118,7 +1214,7 @@ def main():
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
     app.add_handler(CommandHandler("total_files", total_files_command))
-    app.add_handler(CommandHandler("stats", stats_command)) # UPDATED handler
+    app.add_handler(CommandHandler("stats", stats_command)) 
     app.add_handler(CommandHandler("deletefile", delete_file_command))
     app.add_handler(CommandHandler("findfile", find_file_command))
     app.add_handler(CommandHandler("deleteall", delete_all_command))
@@ -1139,7 +1235,7 @@ def main():
         save_file_from_channel
     ))
 
-    # Text Search Handler
+    # Text Search Handler (REVISED LOGIC)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
     
     # Callback Query Handler (for buttons)
