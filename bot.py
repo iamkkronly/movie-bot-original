@@ -46,6 +46,10 @@ MONGO_URIS = [
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
     "mongodb+srv://mw4whhg_db_user:8QTb4HZBrHE99Hh8@cluster0.xdpe7h7.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
     "mongodb+srv://7afcwd6_db_user:sOthaH9f53BDRBoj@cluster0.m9d2zcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://x05bq9p_db_user:gspcMp5M0NQnu9zt@cluster0.bhxd7dp.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://fxexlqy_db_user:O5HiYEZee2pyUyGK@cluster0.ugozkfc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://vnitm0p_db_user:rz1Szy1U9fwJMkis@cluster0.apaqaef.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://mezojs2_db_user:gvT09wd648MfGP5W@cluster0.c5hejzo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 current_uri_index = 0
 
