@@ -44,7 +44,7 @@ PROMOTIONAL_LINKS = [
 MONGO_URIS = [
     "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://mw4whhg_db_user:8QTb4HZBrHE99Hh8@cluster0.xdpewb7.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://mw4whhg_db_user:8QTb4HZBrHE99Hh8@cluster0.xdpe7h7.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
     "mongodb+srv://7afcwd6_db_user:sOthaH9f53BDRBoj@cluster0.m9d2zcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 current_uri_index = 0
@@ -169,7 +169,104 @@ async def save_user_info(user: Update.effective_user):
 
 
 # ========================
-# HANDLERS
+# TASK FUNCTIONS (FOR BACKGROUND EXECUTION)
+# ========================
+
+async def send_file_task(query, context, file_data):
+    """Background task to send a single file to the user's private chat and auto-delete it."""
+    user_id = query.from_user.id
+    try:
+        sent_message = await context.bot.copy_message(
+            chat_id=user_id, # Ensure it's sent to the user's private chat
+            from_chat_id=file_data["channel_id"],
+            message_id=file_data["file_id"],
+        )
+        
+        # Send promotional links
+        for promo_text in PROMOTIONAL_LINKS:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=promo_text
+            )
+        
+        # If the message was sent successfully, wait and then delete it
+        if sent_message:
+            # Notify the user in the original chat (can be group/private)
+            await query.message.reply_text("✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
+            
+            # Wait for 5 minutes
+            await asyncio.sleep(5 * 60)
+            
+            # Delete the message
+            await context.bot.delete_message(
+                chat_id=user_id,
+                message_id=sent_message.message_id
+            )
+            logger.info(f"Deleted message {sent_message.message_id} from chat {user_id}.")
+        
+    except TelegramError as e:
+        logger.error(f"Failed to send file to user {user_id}: {e}")
+        # Only reply in the chat where the button was clicked (group/private)
+        await query.message.reply_text("❌ File not found or could not be sent. Please ensure the bot is not blocked in your private chat.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while sending the file: {e}")
+        await query.message.reply_text("❌ An unexpected error occurred. Please try again later.")
+
+
+async def send_all_files_task(query, context, file_list):
+    """Background task to send multiple files to the user's private chat and auto-delete them."""
+    user_id = query.from_user.id
+    
+    # Send all files
+    sent_messages = []
+    try:
+        for file in file_list:
+            # Ensure it's sent to the user's private chat
+            sent_message = await context.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=file["channel_id"],
+                message_id=file["file_id"],
+            )
+            sent_messages.append(sent_message.message_id)
+            # Add a small delay between sending files to avoid rate limits
+            await asyncio.sleep(0.5)
+
+        # Send promotional links to user's private chat
+        for promo_text in PROMOTIONAL_LINKS:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=promo_text
+            )
+            await asyncio.sleep(0.1) # small delay for promo links
+
+        # Send final confirmation message to the chat where the button was clicked
+        await query.message.reply_text(
+            "✅ I have sent all files to you in a private message. The files will be deleted automatically in 5 minutes."
+        )
+
+        # Wait for 5 minutes
+        await asyncio.sleep(5 * 60)
+
+        # Delete all sent messages
+        for message_id in sent_messages:
+            try:
+                await context.bot.delete_message(
+                    chat_id=user_id,
+                    message_id=message_id
+                )
+                logger.info(f"Deleted message {message_id} from chat {user_id}.")
+            except TelegramError as e:
+                logger.warning(f"Failed to delete message {message_id} for user {user_id}: {e}")
+
+    except TelegramError as e:
+        logger.error(f"Failed to send one or more files to user {user_id}: {e}")
+        await query.message.reply_text("❌ One or more files could not be sent. Please ensure the bot is not blocked in your private chat.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while sending all files: {e}")
+        await query.message.reply_text("❌ An unexpected error occurred. Please try again later.")
+
+# ========================
+# COMMAND HANDLERS
 # ========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -459,6 +556,47 @@ async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ An error occurred while trying to unban the user.")
 
 
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Broadcasts a message to all users in the database.
+    Usage: /broadcast <message>
+    """
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("❌ You do not have permission to use this command.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+
+    broadcast_text = " ".join(context.args)
+    users_cursor = users_col.find({}, {"_id": 1})
+    user_ids = [user["_id"] for user in users_cursor]
+    sent_count = 0
+    failed_count = 0
+
+    await update.message.reply_text(f"🚀 Starting broadcast to {len(user_ids)} users...")
+
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=broadcast_text)
+            sent_count += 1
+            await asyncio.sleep(0.1)
+        except TelegramError as e:
+            failed_count += 1
+            logger.error(f"Failed to send broadcast to user {uid}: {e}")
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Unknown error sending broadcast to user {uid}: {e}")
+    
+    await update.message.reply_text(f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
+
+
+# ========================
+# FILE/SEARCH HANDLERS
+# ========================
+
 async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin sends file to bot -> save to channel + DB"""
     user_id = update.message.from_user.id
@@ -546,26 +684,38 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
                 "channel_id": chat_id,
                 "file_size": file.file_size, 
             })
-            # Send notification to the admin
+            
+            # Send **INSTANT** success notification to the admin
             try:
-                await context.bot.send_message(user_id, f"✅ File **`{clean_name}`** has been indexed successfully from the database channel.")
+                await context.bot.send_message(
+                    user_id, 
+                    f"✅ File **`{escape_markdown(clean_name)}`** has been indexed successfully from the database channel.",
+                    parse_mode="MarkdownV2"
+                )
             except TelegramError as e:
                 logger.error(f"Failed to send notification to admin {user_id}: {e}")
             saved = True
+            
         except Exception as e:
             logger.error(f"Error saving file from channel with URI #{current_uri_index + 1}: {e}")
             current_uri_index += 1
+            
             if current_uri_index < len(MONGO_URIS):
+                # Send warning and attempt switch
+                warning_message = f"⚠️ Database connection failed. Attempting to switch to URI #{current_uri_index + 1}..."
                 try:
-                    await context.bot.send_message(user_id, f"⚠️ Database connection failed. Attempting to switch to URI #{current_uri_index + 1}...")
+                    await context.bot.send_message(user_id, warning_message)
                 except TelegramError:
                     pass
+                
                 if not connect_to_mongo():
+                    # If connection to the new URI also fails, send failure message
                     try:
                         await context.bot.send_message(user_id, "❌ Failed to connect to the next database.")
                     except TelegramError:
                         pass
             else:
+                # All URIs failed
                 try:
                     await context.bot.send_message(user_id, "❌ Failed to save file on all available databases.")
                 except TelegramError:
@@ -656,7 +806,6 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     for idx, file in enumerate(page_results, start=start + 1):
         # Format the filename first, then escape it for Markdown
         two_line_name = format_filename_for_display(file['file_name'])
-        escaped_file_name = escape_markdown(two_line_name)
         
         file_size = format_size(file.get("file_size"))
         
@@ -682,44 +831,6 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     await context.bot.send_message(
         chat_id, text or "No results.", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
     )
-
-
-async def send_file_task(query, context, file_data):
-    """New background task to send files."""
-    try:
-        sent_message = await context.bot.copy_message(
-            chat_id=query.from_user.id,
-            from_chat_id=file_data["channel_id"],
-            message_id=file_data["file_id"],
-        )
-        
-        # Send promotional links to user's private chat immediately
-        for promo_text in PROMOTIONAL_LINKS:
-            await context.bot.send_message(
-                chat_id=query.from_user.id,
-                text=promo_text
-            )
-        
-        # If the message was sent successfully, wait and then delete it
-        if sent_message:
-            await query.message.reply_text("✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
-            
-            # Wait for 5 minutes
-            await asyncio.sleep(5 * 60)
-            
-            # Delete the message
-            await context.bot.delete_message(
-                chat_id=query.from_user.id,
-                message_id=sent_message.message_id
-            )
-            logger.info(f"Deleted message {sent_message.message_id} from chat {query.from_user.id}.")
-        
-    except TelegramError as e:
-        logger.error(f"Failed to send file to user {query.from_user.id}: {e}")
-        await query.message.reply_text("❌ File not found or could not be sent. Please try again later.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while sending the file: {e}")
-        await query.message.reply_text("❌ An unexpected error occurred. Please try again later.")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -751,9 +862,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
         if file_data:
-            # THIS IS THE NEW CHANGE
-            # Instead of running the slow `send_file_task` directly, we schedule it to run in the background.
-            # This allows the `button_handler` to finish immediately, freeing up the bot to receive the next button click.
+            # Schedule the slow `send_file_task` to run in the background.
             asyncio.create_task(send_file_task(query, context, file_data))
         else:
             await query.message.reply_text("❌ File not found.")
@@ -783,16 +892,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
             return
         
+        # Edit the existing message to show the new page
         await query.message.delete()
         await send_results_page(query.message.chat.id, final_results, page, context, search_query)
 
     elif data.startswith("sendall_"):
-        # NEW: Send a message to the user to confirm the request is being processed
-        await query.message.reply_text("📨 Sending all files in the current list. This may take a moment...")
+        # Send a message to the user to confirm the request is being processed
+        await query.message.reply_text("📨 Sending all files in the current list. Please check your private chat with me. This may take a moment...")
 
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        # Re-run the search logic
+        
+        # Re-run the search logic to get the full list of files for the current page
         normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
         
         # Use a more flexible regex that finds words in any order
@@ -810,53 +921,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
         final_results = [result[0] for result in sorted_results[:50]]
         
-        for file in final_results[page * 10:(page + 1) * 10]:
-            await context.bot.copy_message(
-                chat_id=query.message.chat.id,
-                from_chat_id=file["channel_id"],
-                message_id=file["file_id"],
-            )
-        await query.message.reply_text("✅ All files sent!")
+        # Get the files only for the current page
+        files_to_send = final_results[page * 10:(page + 1) * 10]
+        
+        if not files_to_send:
+            await query.message.reply_text("❌ No files found on this page to send.")
+            return
+
+        # Schedule the batch sending task
+        asyncio.create_task(send_all_files_task(query, context, files_to_send))
 
 
-async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Broadcasts a message to all users in the database.
-    Usage: /broadcast <message>
-    """
-    user_id = update.effective_user.id
-    if user_id not in ADMINS:
-        await update.message.reply_text("❌ You do not have permission to use this command.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /broadcast <message>")
-        return
-
-    broadcast_text = " ".join(context.args)
-    users_cursor = users_col.find({}, {"_id": 1})
-    user_ids = [user["_id"] for user in users_cursor]
-    sent_count = 0
-    failed_count = 0
-
-    await update.message.reply_text(f"🚀 Starting broadcast to {len(user_ids)} users...")
-
-    for uid in user_ids:
-        try:
-            await context.bot.send_message(chat_id=uid, text=broadcast_text)
-            sent_count += 1
-            await asyncio.sleep(0.1)
-        except TelegramError as e:
-            failed_count += 1
-            logger.error(f"Failed to send broadcast to user {uid}: {e}")
-        except Exception as e:
-            failed_count += 1
-            logger.error(f"Unknown error sending broadcast to user {uid}: {e}")
-    
-    await update.message.reply_text(f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
-
-
-# =-======================
+# ========================
 # MAIN
 # ========================
 
@@ -867,6 +943,7 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("info", info_command))
@@ -881,17 +958,27 @@ def main():
     app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
 
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.VIDEO | filters.AUDIO, save_file_from_pm))
+    # File and Message Handlers
+    # Admin file upload via PM
+    app.add_handler(MessageHandler(
+        (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.ChatType.PRIVATE,
+        save_file_from_pm
+    ))
     
+    # Admin file indexing via DB Channel
     app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=DB_CHANNEL),
         save_file_from_channel
     ))
 
+    # Text Search Handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
+    
+    # Callback Query Handler (for buttons)
     app.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Bot started...")
+    # Start the bot
     app.run_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
 
 
