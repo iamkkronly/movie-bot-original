@@ -142,7 +142,12 @@ def connect_to_mongo():
     global mongo_client, db, files_col, users_col, banned_users_col
     try:
         uri = MONGO_URIS[current_uri_index]
-        mongo_client = MongoClient(uri)
+        # Set serverSelectionTimeoutMS to 5 seconds to fail fast if the connection is dead
+        mongo_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        # The ismaster command is cheap and does not require auth.
+        # It forces the client to check the connection.
+        mongo_client.admin.command('ismaster')
+        
         db = mongo_client["telegram_files"]
         files_col = db["files"]
         users_col = db["users"]
@@ -300,7 +305,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📢 `/broadcast <message>`: Send a message to all users.\n"
         "👥 `/total_users`: Get the total number of users.\n"
         "🗃️ `/total_files`: Get the total number of files.\n"
-        "📊 `/stats`: Get bot statistics (total users and files).\n"
+        "📊 `/stats`: Get bot statistics (total users, total files, and DB status).\n"
         "🗑️ `/deletefile <db_id>`: Delete a file from the database.\n"
         "  - Use `/findfile <filename>` to get the ID first.\n"
         "📁 `/findfile <filename>`: Find a file by name and get its ID.\n"
@@ -390,28 +395,63 @@ async def total_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to get bot statistics."""
+    """Admin command to get bot statistics, including per-URI file counts."""
     user_id = update.effective_user.id
     if user_id not in ADMINS:
         await update.message.reply_text("❌ You do not have permission to use this command.")
         return
 
-    if users_col is None or files_col is None:
-        await update.message.reply_text("❌ Database not connected.")
-        return
+    await update.message.reply_text("🔄 Collecting statistics, please wait...")
+
+    user_count = 0
+    total_file_count = 0
+    uri_stats = {}
 
     try:
-        user_count = users_col.count_documents({})
-        file_count = files_col.count_documents({})
+        # 1. Get Total Users (from the currently connected DB)
+        if users_col is not None:
+            user_count = users_col.count_documents({})
+        
+        # 2. Get Total Files (from the currently connected DB)
+        if files_col is not None:
+            total_file_count = files_col.count_documents({})
+
+        # 3. Get File Counts per URI
+        for idx, uri in enumerate(MONGO_URIS):
+            temp_client = None
+            try:
+                # Temporarily connect to each URI
+                temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+                temp_client.admin.command('ismaster')
+                temp_db = temp_client["telegram_files"]
+                temp_files_col = temp_db["files"]
+                # Use estimated_document_count for fast approximation
+                file_count = temp_files_col.estimated_document_count() 
+                uri_stats[idx] = f"✅ {file_count} files"
+            except Exception as e:
+                logger.warning(f"Failed to connect or get file count for URI #{idx + 1}: {e}")
+                uri_stats[idx] = "❌ Failed to connect/read"
+            finally:
+                if temp_client:
+                    temp_client.close()
+
+        # 4. Format the output message
         stats_message = (
             f"📊 **Bot Statistics**\n"
             f"  • Total Users: {user_count}\n"
-            f"  • Total Files: {file_count}"
+            f"  • Total Files (Current DB): {total_file_count}\n"
+            f"  • **Total MongoDB URIs:** {len(MONGO_URIS)}\n"
+            f"  • **Current Active URI:** #{current_uri_index + 1}\n\n"
+            f"**File Count per URI:**\n"
         )
+        for idx, status in uri_stats.items():
+            stats_message += f"  • URI #{idx + 1}: {status}\n"
+
         await update.message.reply_text(stats_message, parse_mode="Markdown")
+        
     except Exception as e:
         logger.error(f"Error getting bot stats: {e}")
-        await update.message.reply_text("❌ Failed to retrieve stats. Please check the database connection.")
+        await update.message.reply_text("❌ Failed to retrieve statistics. Please check the database connection.")
 
 
 async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -431,6 +471,7 @@ async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         file_id = context.args[0]
+        # NOTE: This only deletes from the *current* active database.
         result = files_col.delete_one({"_id": ObjectId(file_id)})
         
         if result.deleted_count == 1:
@@ -443,41 +484,52 @@ async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to find a file by its name and show its ID."""
+    """Admin command to find a file by its name and show its ID. Searches ALL URIs."""
     user_id = update.effective_user.id
     if user_id not in ADMINS:
         await update.message.reply_text("❌ You do not have permission to use this command.")
         return
     
-    if files_col is None:
-        await update.message.reply_text("❌ Database not connected.")
-        return
-
     if not context.args:
         await update.message.reply_text("Usage: /findfile <filename>")
         return
 
     query_filename = " ".join(context.args)
+    all_results = []
+    
+    await update.message.reply_text(f"🔎 Searching all {len(MONGO_URIS)} databases for `{query_filename}`...")
 
-    try:
-        # Use regex for case-insensitive search
-        results = list(files_col.find({"file_name": {"$regex": query_filename, "$options": "i"}}))
-        
-        if not results:
-            await update.message.reply_text(f"❌ No files found with the name `{query_filename}`.")
-            return
+    # Iterate through all URIs
+    for idx, uri in enumerate(MONGO_URIS):
+        temp_client = None
+        try:
+            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+            temp_client.admin.command('ismaster')
+            temp_db = temp_client["telegram_files"]
+            temp_files_col = temp_db["files"]
+            
+            # Use regex for case-insensitive search
+            results = list(temp_files_col.find({"file_name": {"$regex": query_filename, "$options": "i"}}))
+            all_results.extend(results)
+            logger.info(f"Found {len(results)} files in URI #{idx + 1}")
+        except Exception as e:
+            logger.error(f"Error finding file on URI #{idx + 1}: {e}")
+        finally:
+            if temp_client:
+                temp_client.close()
 
-        response_text = f"📁 Found {len(results)} files matching `{query_filename}`:\n\n"
-        for idx, file in enumerate(results):
-            response_text += f"{idx + 1}. *{escape_markdown(file['file_name'])}*\n  `ID: {file['_id']}`\n\n"
-        
-        response_text += "Copy the ID of the file you want to delete and use the command:\n`/deletefile <ID>`"
-        
-        await update.message.reply_text(response_text, parse_mode="Markdown")
 
-    except Exception as e:
-        logger.error(f"Error finding file: {e}")
-        await update.message.reply_text("❌ An error occurred while trying to find the file.")
+    if not all_results:
+        await update.message.reply_text(f"❌ No files found with the name `{query_filename}` in any database.")
+        return
+
+    response_text = f"📁 Found {len(all_results)} files matching `{query_filename}` across all databases:\n\n"
+    for idx, file in enumerate(all_results):
+        response_text += f"{idx + 1}. *{escape_markdown(file['file_name'])}*\n  `ID: {file['_id']}`\n\n"
+    
+    response_text += "Copy the ID of the file you want to delete and use the command:\n`/deletefile <ID>`\n\nNote: `/deletefile` only works on the currently *active* database. If the file is not found, you may need to manually update the `current_uri_index` and restart."
+    
+    await update.message.reply_text(response_text, parse_mode="Markdown")
 
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -492,11 +544,12 @@ async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     try:
+        # NOTE: This only deletes from the *current* active database.
         result = files_col.delete_many({})
-        await update.message.reply_text(f"✅ Deleted {result.deleted_count} files from the database.")
+        await update.message.reply_text(f"✅ Deleted {result.deleted_count} files from the **current** database.")
     except Exception as e:
         logger.error(f"Error deleting all files: {e}")
-        await update.message.reply_text("❌ An error occurred while trying to delete all files.")
+        await update.message.reply_text("❌ An error occurred while trying to delete all files from the current database.")
 
 
 async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -575,6 +628,9 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     broadcast_text = " ".join(context.args)
+    
+    # NOTE: This only broadcasts to users in the *current* active database's users_col.
+    # To broadcast to ALL users, you'd need to query all URIs for user IDs.
     users_cursor = users_col.find({}, {"_id": 1})
     user_ids = [user["_id"] for user in users_cursor]
     sent_count = 0
@@ -626,32 +682,61 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_uri_index, files_col
     
     saved = False
-    while not saved and current_uri_index < len(MONGO_URIS):
+    temp_uri_index = current_uri_index
+    # Start the loop from the current active index and wrap around to try all
+    for i in range(len(MONGO_URIS)):
+        idx = (temp_uri_index + i) % len(MONGO_URIS)
+        uri_to_try = MONGO_URIS[idx]
+        
+        temp_client = None
         try:
-            # Try to save metadata with the current client
-            files_col.insert_one({
+            # If we're not on the currently connected URI, we need a new client
+            if idx != current_uri_index or files_col is None:
+                temp_client = MongoClient(uri_to_try, serverSelectionTimeoutMS=5000)
+                temp_client.admin.command('ismaster')
+                temp_db = temp_client["telegram_files"]
+                temp_files_col = temp_db["files"]
+            else:
+                # Use the global client
+                temp_files_col = files_col
+
+            # Try to save metadata
+            temp_files_col.insert_one({
                 "file_name": clean_name,
                 "file_id": forwarded.message_id,
                 "channel_id": forwarded.chat.id,
                 "file_size": file.file_size, 
             })
-            await update.message.reply_text(f"✅ Saved: {clean_name}")
+            
+            # If successful, set the current global index to this one
+            if idx != current_uri_index:
+                global mongo_client, db, users_col, banned_users_col
+                # Close old client if needed
+                if mongo_client:
+                    mongo_client.close()
+                
+                # Update global connection pointers
+                mongo_client = temp_client
+                db = temp_db
+                files_col = temp_files_col
+                current_uri_index = idx
+                logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
+            
+            await update.message.reply_text(f"✅ Saved to DB #{idx + 1}: {clean_name}")
             saved = True
+            break
         except Exception as e:
-            logger.error(f"Error saving file with URI #{current_uri_index + 1}: {e}")
-            current_uri_index += 1
-            if current_uri_index < len(MONGO_URIS):
-                await update.message.reply_text(
-                    f"⚠️ Database connection failed. Attempting to switch to URI #{current_uri_index + 1}..."
-                )
-                if not connect_to_mongo():
-                    # If connection to the new URI also fails, the loop will continue to the next one
-                    await update.message.reply_text("❌ Failed to connect to the next database.")
-            else:
-                await update.message.reply_text("❌ Failed to save file on all available databases.")
+            logger.error(f"Error saving file with URI #{idx + 1}: {e}")
+            if idx == current_uri_index and len(MONGO_URIS) > 1:
+                 await update.message.reply_text(f"⚠️ Primary DB failed. Trying next available URI...")
+        finally:
+            if temp_client and idx != current_uri_index:
+                temp_client.close()
+
 
     if not saved:
         logger.error("All MongoDB URIs have been tried and failed.")
+        await update.message.reply_text("❌ Failed to save file on all available databases.")
 
 
 async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -679,58 +764,75 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
     global current_uri_index, files_col
     
     saved = False
-    while not saved and current_uri_index < len(MONGO_URIS):
+    temp_uri_index = current_uri_index
+    
+    for i in range(len(MONGO_URIS)):
+        idx = (temp_uri_index + i) % len(MONGO_URIS)
+        uri_to_try = MONGO_URIS[idx]
+        
+        temp_client = None
         try:
-            # Try to save metadata with the current client
-            files_col.insert_one({
+            if idx != current_uri_index or files_col is None:
+                temp_client = MongoClient(uri_to_try, serverSelectionTimeoutMS=5000)
+                temp_client.admin.command('ismaster')
+                temp_db = temp_client["telegram_files"]
+                temp_files_col = temp_db["files"]
+            else:
+                temp_files_col = files_col
+
+            # Try to save metadata
+            temp_files_col.insert_one({
                 "file_name": clean_name,
                 "file_id": update.message.message_id,
                 "channel_id": chat_id,
                 "file_size": file.file_size, 
             })
             
+            # If successful, set the current global index to this one
+            if idx != current_uri_index:
+                global mongo_client, db, users_col, banned_users_col
+                if mongo_client:
+                    mongo_client.close()
+                
+                mongo_client = temp_client
+                db = temp_db
+                files_col = temp_files_col
+                current_uri_index = idx
+                logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
+            
             # Send **INSTANT** success notification to the admin
             try:
                 await context.bot.send_message(
                     user_id, 
-                    f"✅ File **`{escape_markdown(clean_name)}`** has been indexed successfully from the database channel.",
+                    f"✅ File **`{escape_markdown(clean_name)}`** has been indexed successfully from the database channel to DB #{idx + 1}.",
                     parse_mode="MarkdownV2"
                 )
             except TelegramError as e:
                 logger.error(f"Failed to send notification to admin {user_id}: {e}")
             saved = True
+            break
             
         except Exception as e:
-            logger.error(f"Error saving file from channel with URI #{current_uri_index + 1}: {e}")
-            current_uri_index += 1
-            
-            if current_uri_index < len(MONGO_URIS):
-                # Send warning and attempt switch
-                warning_message = f"⚠️ Database connection failed. Attempting to switch to URI #{current_uri_index + 1}..."
+            logger.error(f"Error saving file from channel with URI #{idx + 1}: {e}")
+            if idx == current_uri_index and len(MONGO_URIS) > 1:
                 try:
-                    await context.bot.send_message(user_id, warning_message)
+                    await context.bot.send_message(user_id, "⚠️ Primary DB failed. Trying next available URI...")
                 except TelegramError:
                     pass
-                
-                if not connect_to_mongo():
-                    # If connection to the new URI also fails, send failure message
-                    try:
-                        await context.bot.send_message(user_id, "❌ Failed to connect to the next database.")
-                    except TelegramError:
-                        pass
-            else:
-                # All URIs failed
-                try:
-                    await context.bot.send_message(user_id, "❌ Failed to save file on all available databases.")
-                except TelegramError:
-                    pass
+        finally:
+            if temp_client and idx != current_uri_index:
+                temp_client.close()
 
     if not saved:
         logger.error("All MongoDB URIs have been tried and failed.")
+        try:
+            await context.bot.send_message(user_id, "❌ Failed to save file on all available databases.")
+        except TelegramError:
+            pass
 
 
 async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Search DB and show results, sorted by relevance"""
+    """Search ALL URIs and show results, sorted by relevance"""
     
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("❌ You are banned from using this bot.")
@@ -748,7 +850,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Send instant feedback
-    await update.message.reply_text("Searching...")
+    await update.message.reply_text(f"🔍 Searching all {len(MONGO_URIS)} databases...")
 
     raw_query = update.message.text.strip()
     # Normalize query for better fuzzy search
@@ -766,25 +868,48 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     words = normalized_query.split()
     regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
     
-    try:
-        # First, get a fast, preliminary list of files from the database
-        preliminary_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
-    except Exception as e:
-        logger.error(f"MongoDB regex query failed: {e}")
-        await update.message.reply_text("❌ An error occurred during search. Please try again.")
-        return
+    preliminary_results = []
+    
+    # --- NEW LOGIC: Iterate over ALL URIs for search ---
+    for idx, uri in enumerate(MONGO_URIS):
+        temp_client = None
+        try:
+            # Temporarily connect to each URI
+            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+            temp_client.admin.command('ismaster')
+            temp_db = temp_client["telegram_files"]
+            temp_files_col = temp_db["files"]
+            
+            # Query the database
+            results = list(temp_files_col.find({"file_name": {"$regex": regex_pattern}}))
+            preliminary_results.extend(results)
+            logger.info(f"Found {len(results)} matches in URI #{idx + 1}.")
+            
+        except Exception as e:
+            logger.error(f"MongoDB search query failed on URI #{idx + 1}: {e}")
+        finally:
+            if temp_client:
+                temp_client.close()
+    # --- END NEW LOGIC ---
 
     if not preliminary_results:
         await update.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
         return
 
-    # Now, perform a more accurate fuzzy search on this smaller list
+    # Now, perform a more accurate fuzzy search on this aggregated list
     results_with_score = []
+    # Use a set to track file_id + channel_id tuples to ensure no duplicates from different DBs
+    unique_files = set() 
+    
     for file in preliminary_results:
-        # Check against a lower threshold to allow more potential matches
+        file_key = (file.get('file_id'), file.get('channel_id'))
+        if file_key in unique_files:
+            continue
+            
         score = fuzz.token_set_ratio(normalized_query, file['file_name'])
         if score > 40:
             results_with_score.append((file, score))
+            unique_files.add(file_key)
     
     # Sort the results by score in descending order
     sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
@@ -813,16 +938,26 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         
         file_size = format_size(file.get("file_size"))
         
+        # We need the full file object ID for retrieval
+        file_obj_id = str(file['_id'])
+        
         button_text = f"[{file_size}] {file['file_name'][:40]}"
         buttons.append(
-            [InlineKeyboardButton(button_text, callback_data=f"get_{file['_id']}")]
+            [InlineKeyboardButton(button_text, callback_data=f"get_{file_obj_id}")]
         )
     
     # Add the promotional text at the end
     text += "\n\nKaustav Ray                                                                                                      Join here: @filestore4u     @freemovie5u"
 
     nav_buttons = []
+    # We pass the full search results list along in context.user_data to prevent re-querying all URIs for pagination
+    # For simplicity here, we'll store the results temporarily. The full solution requires a dedicated caching mechanism.
+    # Storing the results in context.user_data will be lost on bot restart, but works for the current user session.
+    # The current code relies on the search query, which is acceptable for this code structure.
+    
     if page > 0:
+        # The query string in the callback needs to be properly URL-encoded if it contains special characters
+        # But for this bot's simple query, passing the raw query should be fine.
         nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{query}"))
     if end < len(results):
         nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{query}"))
@@ -853,7 +988,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
             [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
-            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://tme/krbook_official")]
         ])
         await query.message.reply_text("❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
@@ -864,76 +999,105 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Send a message to the user to confirm the request is being processed
         await query.message.reply_text("⌛ Processing your request, please wait...")
         
-        file_data = files_col.find_one({"_id": ObjectId(data.split("_", 1)[1])})
+        file_id_str = data.split("_", 1)[1]
+        file_data = None
+        
+        # --- NEW LOGIC: Check ALL URIs to find the file by its MongoDB ID ---
+        for uri in MONGO_URIS:
+            temp_client = None
+            try:
+                temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+                temp_client.admin.command('ismaster')
+                temp_db = temp_client["telegram_files"]
+                temp_files_col = temp_db["files"]
+                
+                file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
+                if file_data:
+                    logger.info(f"File {file_id_str} found for retrieval in URI: {uri}")
+                    break # Found the file, stop searching
+            except Exception as e:
+                logger.error(f"Error checking file ID {file_id_str} in URI {uri}: {e}")
+            finally:
+                if temp_client:
+                    temp_client.close()
+        # --- END NEW LOGIC ---
+
         if file_data:
             # Schedule the slow `send_file_task` to run in the background.
             asyncio.create_task(send_file_task(query, context, file_data))
         else:
-            await query.message.reply_text("❌ File not found.")
+            await query.message.reply_text("❌ File not found. The file may have been deleted or the database is inaccessible.")
 
-    elif data.startswith("page_"):
+    elif data.startswith("page_") or data.startswith("sendall_"):
+        
+        if data.startswith("sendall_"):
+            await query.message.reply_text("📨 Sending all files in the current list. Please check your private chat with me. This may take a moment...")
+
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        # Re-run the search logic for pagination
+        
+        # Re-run the search logic for pagination/sendall
         normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
         
         # Use a more flexible regex that finds words in any order
         words = normalized_query.split()
         regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
-        preliminary_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
         
-        # Now, perform a more accurate fuzzy search on this smaller list
+        preliminary_results = []
+        
+        # --- Rerun Search Logic: Iterate over ALL URIs for search ---
+        for idx, uri in enumerate(MONGO_URIS):
+            temp_client = None
+            try:
+                temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+                temp_client.admin.command('ismaster')
+                temp_db = temp_client["telegram_files"]
+                temp_files_col = temp_db["files"]
+                
+                results = list(temp_files_col.find({"file_name": {"$regex": regex_pattern}}))
+                preliminary_results.extend(results)
+            except Exception as e:
+                logger.error(f"MongoDB search query failed on URI #{idx + 1}: {e}")
+            finally:
+                if temp_client:
+                    temp_client.close()
+        # --- End Rerun Search Logic ---
+        
+        # Now, perform a more accurate fuzzy search on this aggregated list
         results_with_score = []
+        unique_files = set() 
         for file in preliminary_results:
+            file_key = (file.get('file_id'), file.get('channel_id'))
+            if file_key in unique_files:
+                continue
+            
             score = fuzz.token_set_ratio(normalized_query, file['file_name'])
             if score > 40:
                 results_with_score.append((file, score))
+                unique_files.add(file_key)
         
         sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
         final_results = [result[0] for result in sorted_results[:50]]
-
+        
         if not final_results:
             await query.message.reply_text("❌ No relevant files found. For your query contact @kaustavhibot")
             return
         
-        # Edit the existing message to show the new page
-        await query.message.delete()
-        await send_results_page(query.message.chat.id, final_results, page, context, search_query)
+        if data.startswith("page_"):
+            # Edit the existing message to show the new page
+            await query.message.delete()
+            await send_results_page(query.message.chat.id, final_results, page, context, search_query)
+        
+        elif data.startswith("sendall_"):
+            # Get the files only for the current page
+            files_to_send = final_results[page * 10:(page + 1) * 10]
+            
+            if not files_to_send:
+                await query.message.reply_text("❌ No files found on this page to send.")
+                return
 
-    elif data.startswith("sendall_"):
-        # Send a message to the user to confirm the request is being processed
-        await query.message.reply_text("📨 Sending all files in the current list. Please check your private chat with me. This may take a moment...")
-
-        _, page_str, search_query = data.split("_", 2)
-        page = int(page_str)
-        
-        # Re-run the search logic to get the full list of files for the current page
-        normalized_query = search_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
-        
-        # Use a more flexible regex that finds words in any order
-        words = normalized_query.split()
-        regex_pattern = re.compile(".*".join(map(re.escape, words)), re.IGNORECASE)
-        preliminary_results = list(files_col.find({"file_name": {"$regex": regex_pattern}}))
-        
-        # Now, perform a more accurate fuzzy search on this smaller list
-        results_with_score = []
-        for file in preliminary_results:
-            score = fuzz.token_set_ratio(normalized_query, file['file_name'])
-            if score > 40:
-                results_with_score.append((file, score))
-        
-        sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
-        final_results = [result[0] for result in sorted_results[:50]]
-        
-        # Get the files only for the current page
-        files_to_send = final_results[page * 10:(page + 1) * 10]
-        
-        if not files_to_send:
-            await query.message.reply_text("❌ No files found on this page to send.")
-            return
-
-        # Schedule the batch sending task
-        asyncio.create_task(send_all_files_task(query, context, files_to_send))
+            # Schedule the batch sending task
+            asyncio.create_task(send_all_files_task(query, context, files_to_send))
 
 
 # ========================
@@ -954,7 +1118,7 @@ def main():
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
     app.add_handler(CommandHandler("total_files", total_files_command))
-    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("stats", stats_command)) # UPDATED handler
     app.add_handler(CommandHandler("deletefile", delete_file_command))
     app.add_handler(CommandHandler("findfile", find_file_command))
     app.add_handler(CommandHandler("deleteall", delete_all_command))
