@@ -389,15 +389,16 @@ async def total_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     try:
+        # NOTE: This only gives the count from the CURRENT active database.
         file_count = files_col.count_documents({})
-        await update.message.reply_text(f"🗃️ **Total Files:** {file_count}")
+        await update.message.reply_text(f"🗃️ **Total Files (Current DB):** {file_count}")
     except Exception as e:
         logger.error(f"Error getting file count: {e}")
         await update.message.reply_text("❌ Failed to retrieve file count. Please check the database connection.")
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to get bot statistics, including per-URI file counts."""
+    """Admin command to get bot statistics, including per-URI file counts. (MODIFIED)"""
     user_id = update.effective_user.id
     if user_id not in ADMINS:
         await update.message.reply_text("❌ You do not have permission to use this command.")
@@ -406,7 +407,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Collecting statistics, please wait...")
 
     user_count = 0
-    total_file_count = 0
+    total_file_count_all_db = 0 # Accumulator for total files across all URIs
     uri_stats = {}
 
     try:
@@ -414,11 +415,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if users_col is not None:
             user_count = users_col.count_documents({})
         
-        # 2. Get Total Files (from the currently connected DB)
-        if files_col is not None:
-            total_file_count = files_col.count_documents({})
-
-        # 3. Get File Counts per URI
+        # 2. Get File Counts per URI and total file count
         for idx, uri in enumerate(MONGO_URIS):
             temp_client = None
             try:
@@ -430,6 +427,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Use estimated_document_count for fast approximation
                 file_count = temp_files_col.estimated_document_count() 
                 uri_stats[idx] = f"✅ {file_count} files"
+                total_file_count_all_db += file_count # Accumulate count
             except Exception as e:
                 logger.warning(f"Failed to connect or get file count for URI #{idx + 1}: {e}")
                 uri_stats[idx] = "❌ Failed to connect/read"
@@ -437,11 +435,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if temp_client:
                     temp_client.close()
 
-        # 4. Format the output message
+        # 3. Format the output message
         stats_message = (
             f"📊 **Bot Statistics**\n"
             f"  • Total Users: {user_count}\n"
-            f"  • Total Files (Current DB): {total_file_count}\n"
+            f"  • Total Connected Groups: {len(JOIN_CHECK_CHANNEL)}\n" # Using the count of JOIN_CHECK_CHANNEL
+            f"  • Total Files (All DB): {total_file_count_all_db}\n" # Total count from all URIs
             f"  • **Total MongoDB URIs:** {len(MONGO_URIS)}\n"
             f"  • **Current Active URI:** #{current_uri_index + 1}\n\n"
             f"**File Count per URI:**\n"
@@ -1018,7 +1017,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
             [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
-            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://tme/krbook_official")]
         ])
         await query.message.reply_text("❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
